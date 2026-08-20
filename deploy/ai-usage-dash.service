@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Usage dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ai-usage-dash serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

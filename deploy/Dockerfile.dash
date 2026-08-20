@@ -1,0 +1,15 @@
+# Optional dashboard image. Agent must run on the host (needs $HOME tool logs).
+FROM rust:1.86-bookworm AS build
+WORKDIR /src
+COPY . .
+RUN cd web && npm ci && npm run build
+RUN cargo build --release -p ai-usage-dash
+
+FROM gcr.io/distroless/cc-debian12
+COPY --from=build /src/target/release/ai-usage-dash /ai-usage-dash
+ENV XDG_CONFIG_HOME=/data/config
+ENV XDG_DATA_HOME=/data/share
+EXPOSE 3847
+VOLUME ["/data"]
+ENTRYPOINT ["/ai-usage-dash"]
+CMD ["serve", "--bind", "0.0.0.0:3847", "--behind-proxy"]

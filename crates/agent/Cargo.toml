@@ -1,0 +1,25 @@
+[package]
+name = "ai-usage-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Local collector that parses AI tool logs and reports usage"
+
+[[bin]]
+name = "ai-usage-agent"
+path = "src/main.rs"
+
+[dependencies]
+ai-usage-parsers.workspace = true
+ai-usage-protocol.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+flate2.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }

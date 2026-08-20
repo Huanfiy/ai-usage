@@ -1,0 +1,38 @@
+[package]
+name = "ai-usage-dash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Usage dashboard: ingest, rollup, pricing, embedded UI"
+
+[[bin]]
+name = "ai-usage-dash"
+path = "src/main.rs"
+
+[dependencies]
+ai-usage-protocol.workspace = true
+anyhow.workspace = true
+axum = { version = "0.8", features = ["json"] }
+chrono.workspace = true
+clap.workspace = true
+flate2.workspace = true
+hex.workspace = true
+mime_guess = "2"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rust-embed = { version = "8", features = ["mime-guess"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+toml.workspace = true
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "2.12", default-features = false, features = ["tls", "json"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
