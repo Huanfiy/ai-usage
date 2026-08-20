@@ -5,3 +5,10 @@
 tmp/
 .DS_Store
 *.swp
+
+# AI 工具目录（仅仓库根；fixtures/home/.claude 等测试夹具仍入库）
+/.cursor/
+/.claude/
+/.codex/
+/.agents/
+/.gemini/
