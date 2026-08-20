@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 360" role="img" aria-labelledby="title desc">
+  <title id="title">宿主机污染边界：只读工具目录，自身文件走 XDG</title>
+  <desc id="desc">采集端只读取各 AI 工具已有数据目录，永不写入。自身配置与状态只落在 XDG 路径，或通过 --config / --data-dir 整体搬迁。</desc>
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.06"/>
+    </filter>
+  </defs>
+  <rect width="1100" height="360" rx="20" fill="#f8fafc"/>
+  <text x="40" y="42" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="20" font-weight="700" fill="#0f172a">污染边界</text>
+  <text x="40" y="64" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" fill="#64748b">对宿主机其它工具零写入；自身状态可整体搬走。不向各工具目录安装 skill。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="88" width="330" height="236" rx="14" fill="#fff" stroke="#fecaca"/>
+  </g>
+  <rect x="40" y="88" width="330" height="8" rx="4" fill="#dc2626"/>
+  <text x="60" y="128" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="700" fill="#991b1b">工具目录 · 只读</text>
+  <text x="60" y="150" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">永不写入 · 不装 SKILL.md</text>
+  <rect x="60" y="168" width="290" height="36" rx="8" fill="#fef2f2"/>
+  <text x="205" y="191" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#7f1d1d">~/.claude</text>
+  <rect x="60" y="212" width="290" height="36" rx="8" fill="#fef2f2"/>
+  <text x="205" y="235" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#7f1d1d">~/.codex · $CODEX_HOME</text>
+  <rect x="60" y="256" width="290" height="36" rx="8" fill="#fef2f2"/>
+  <text x="205" y="279" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#7f1d1d">~/.grok · $GROK_HOME</text>
+
+  <g filter="url(#shadow)">
+    <rect x="390" y="88" width="330" height="236" rx="14" fill="#fff" stroke="#99f6e4"/>
+  </g>
+  <rect x="390" y="88" width="330" height="8" rx="4" fill="#0d9488"/>
+  <text x="410" y="128" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="700" fill="#115e59">自身文件 · XDG</text>
+  <text x="410" y="150" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">配置与状态与其它工具隔离</text>
+  <rect x="410" y="168" width="290" height="52" rx="8" fill="#f0fdfa"/>
+  <text x="555" y="190" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">配置</text>
+  <text x="555" y="208" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="#134e4a">~/.config/ai-usage/</text>
+  <rect x="410" y="228" width="290" height="68" rx="8" fill="#f0fdfa"/>
+  <text x="555" y="252" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">数据</text>
+  <text x="555" y="270" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" fill="#134e4a">~/.local/share/ai-usage/</text>
+  <text x="555" y="286" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">agent state · dash SQLite · 报价缓存</text>
+
+  <g filter="url(#shadow)">
+    <rect x="740" y="88" width="320" height="236" rx="14" fill="#fff" stroke="#bfdbfe"/>
+  </g>
+  <rect x="740" y="88" width="320" height="8" rx="4" fill="#2563eb"/>
+  <text x="760" y="128" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="700" fill="#1e40af">可整体搬迁</text>
+  <text x="760" y="150" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">不依赖默认家目录布局</text>
+  <rect x="760" y="168" width="280" height="52" rx="8" fill="#eff6ff"/>
+  <text x="900" y="190" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#1e3a8a">--config</text>
+  <text x="900" y="208" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">配置文件任意路径</text>
+  <rect x="760" y="228" width="280" height="68" rx="8" fill="#eff6ff"/>
+  <text x="900" y="254" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#1e3a8a">--data-dir</text>
+  <text x="900" y="274" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">数据目录任意路径</text>
+  <text x="900" y="292" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">卸载 user daemon 即可撤干净</text>
+</svg>

@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 440" role="img" aria-labelledby="title desc">
+  <title id="title">多主机身份：token 派生 host_id，hostname 仅作显示名</title>
+  <desc id="desc">两台主机即使 hostname 都是 ubuntu，也因 ingest token 不同而得到不同 host_id，数据互不串扰。跨主机汇总只发生在查询层。</desc>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arr-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7c3aed"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.06"/>
+    </filter>
+  </defs>
+  <rect width="1100" height="440" rx="20" fill="#f8fafc"/>
+  <text x="40" y="40" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="20" font-weight="700" fill="#0f172a">身份与隔离</text>
+  <text x="40" y="62" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" fill="#64748b">主机主键来自 ingest token，不信任 payload 自报。改显示名不断历史。</text>
+
+  <text x="180" y="88" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">采集端出示</text>
+  <text x="530" y="88" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">看板侧映射</text>
+  <text x="880" y="88" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">按 host_id 挂接</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="100" width="280" height="118" rx="14" fill="#fff" stroke="#e9d5ff"/>
+  </g>
+  <text x="60" y="124" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" font-weight="700" fill="#7c3aed">宿主机 A · ingest token</text>
+  <rect x="60" y="136" width="240" height="32" rx="8" fill="#f5f3ff"/>
+  <text x="180" y="157" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#5b21b6">aiu_9f3c…（示例）</text>
+  <text x="60" y="190" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">envelope.hostname = ubuntu</text>
+  <text x="60" y="206" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">显示名，允许重复</text>
+
+  <line x1="320" y1="159" x2="378" y2="159" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#arr-p)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="380" y="100" width="280" height="118" rx="14" fill="#fff" stroke="#ddd6fe"/>
+  </g>
+  <text x="520" y="128" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">host_id（主键）</text>
+  <text x="520" y="156" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="700" fill="#5b21b6">a1f0…c3</text>
+  <text x="520" y="186" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#0f172a">显示名 ubuntu</text>
+  <text x="520" y="204" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">改名不断历史</text>
+
+  <line x1="660" y1="159" x2="718" y2="159" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="720" y="100" width="340" height="118" rx="14" fill="#fff" stroke="#99f6e4"/>
+  </g>
+  <text x="890" y="148" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">A 的 buckets / sessions</text>
+  <text x="890" y="176" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">只挂在 a1f0…c3 下</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="234" width="280" height="118" rx="14" fill="#fff" stroke="#e9d5ff"/>
+  </g>
+  <text x="60" y="258" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" font-weight="700" fill="#7c3aed">宿主机 B · ingest token</text>
+  <rect x="60" y="270" width="240" height="32" rx="8" fill="#f5f3ff"/>
+  <text x="180" y="291" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12" fill="#5b21b6">aiu_21ab…（示例）</text>
+  <text x="60" y="324" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">envelope.hostname = ubuntu</text>
+  <text x="60" y="340" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">与 A 同名，不串数据</text>
+
+  <line x1="320" y1="293" x2="378" y2="293" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#arr-p)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="380" y="234" width="280" height="118" rx="14" fill="#fff" stroke="#ddd6fe"/>
+  </g>
+  <text x="520" y="262" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">host_id（主键）</text>
+  <text x="520" y="290" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" font-weight="700" fill="#5b21b6">b7e2…19</text>
+  <text x="520" y="320" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#0f172a">显示名 ubuntu</text>
+  <text x="520" y="338" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">与 A 隔离</text>
+
+  <line x1="660" y1="293" x2="718" y2="293" stroke="#64748b" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="720" y="234" width="340" height="118" rx="14" fill="#fff" stroke="#99f6e4"/>
+  </g>
+  <text x="890" y="282" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">B 的 buckets / sessions</text>
+  <text x="890" y="310" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">只挂在 b7e2…19 下</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="368" width="1020" height="52" rx="14" fill="#fff" stroke="#bfdbfe"/>
+  </g>
+  <text x="60" y="399" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">查询层 · 同一套接口</text>
+  <rect x="250" y="380" width="360" height="28" rx="8" fill="#eff6ff"/>
+  <text x="430" y="399" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#1e40af">全部汇总 · 不传 host</text>
+  <rect x="630" y="380" width="400" height="28" rx="8" fill="#eff6ff"/>
+  <text x="830" y="399" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#1e40af">单机视图 · 传入 host_id</text>
+</svg>

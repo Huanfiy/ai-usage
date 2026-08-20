@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 640" role="img" aria-labelledby="title desc">
+  <title id="title">AI Usage 系统全景</title>
+  <desc id="desc">多台宿主机上的采集端只读解析本机 AI 工具日志，经 gzip ingest 上报到独立部署的看板端；浏览器只访问看板。</desc>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arr-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2563eb"/>
+    </marker>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="112%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0f172a" flood-opacity="0.06"/>
+    </filter>
+  </defs>
+  <rect width="1100" height="640" rx="20" fill="#f8fafc"/>
+  <text x="40" y="42" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="20" font-weight="700" fill="#0f172a">系统全景</text>
+  <text x="40" y="64" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" fill="#64748b">采集发生在宿主机；聚合与展示发生在看板。两端唯一耦合是版本化 ingest 协议。</text>
+
+  <g filter="url(#shadow)">
+    <rect x="400" y="84" width="300" height="52" rx="12" fill="#fff" stroke="#e2e8f0"/>
+  </g>
+  <circle cx="428" cy="110" r="8" fill="#f59e0b"/>
+  <text x="448" y="115" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="600" fill="#0f172a">浏览器</text>
+  <text x="548" y="115" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">只访问看板，不接触宿主机日志</text>
+
+  <line x1="550" y1="136" x2="550" y2="168" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="562" y="158" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">查询 / 静态 UI</text>
+
+  <g filter="url(#shadow)">
+    <rect x="160" y="168" width="780" height="196" rx="16" fill="#fff" stroke="#99f6e4"/>
+  </g>
+  <rect x="160" y="168" width="8" height="196" rx="4" fill="#0d9488"/>
+  <text x="188" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" font-weight="700" fill="#0f766e">ai-usage-dash</text>
+  <text x="360" y="196" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">看板端 · 可本机或服务器 · 单进程自包含</text>
+
+  <g>
+    <rect x="188" y="216" width="168" height="120" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="272" y="248" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">接收上报</text>
+    <text x="272" y="270" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#0f766e">POST /v1/ingest</text>
+    <text x="272" y="288" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">token 映射主机身份</text>
+    <text x="272" y="306" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">活窗口保护</text>
+  </g>
+  <g>
+    <rect x="372" y="216" width="168" height="120" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="456" y="248" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">按主机存储</text>
+    <text x="456" y="270" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#0f766e">SQLite · 本机文件</text>
+    <text x="456" y="288" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">主机数据互不改写</text>
+    <text x="456" y="306" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">跨机汇总仅在查询层</text>
+  </g>
+  <g>
+    <rect x="556" y="216" width="168" height="120" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="640" y="248" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">查询计价</text>
+    <text x="640" y="270" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#0f766e">token 换算估算费用</text>
+    <text x="640" y="288" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">报价不改历史行</text>
+    <text x="640" y="306" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">未知模型计入 coverage</text>
+  </g>
+  <g>
+    <rect x="740" y="216" width="172" height="120" rx="10" fill="#f0fdfa" stroke="#99f6e4"/>
+    <text x="826" y="248" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" font-weight="700" fill="#115e59">展示</text>
+    <text x="826" y="270" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#0f766e">内嵌 Web UI</text>
+    <text x="826" y="288" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">KPI · 趋势 · 分解</text>
+    <text x="826" y="306" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">全机 / 单机同一套查询</text>
+  </g>
+
+  <line x1="300" y1="364" x2="300" y2="404" stroke="#2563eb" stroke-width="1.8" marker-end="url(#arr-blue)"/>
+  <line x1="800" y1="364" x2="800" y2="404" stroke="#2563eb" stroke-width="1.8" marker-end="url(#arr-blue)"/>
+  <text x="312" y="392" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#2563eb">gzip JSON · Bearer</text>
+  <text x="812" y="392" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#2563eb">gzip JSON · Bearer</text>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="404" width="460" height="200" rx="16" fill="#fff" stroke="#fed7aa"/>
+  </g>
+  <rect x="60" y="404" width="8" height="200" rx="4" fill="#d97706"/>
+  <text x="88" y="432" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="700" fill="#9a3412">宿主机 A</text>
+  <text x="168" y="432" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">本机用户环境 · Agent 不容器化</text>
+
+  <rect x="88" y="450" width="108" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="142" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Claude Code</text>
+  <rect x="204" y="450" width="72" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="240" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Codex</text>
+  <rect x="284" y="450" width="64" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="316" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Grok</text>
+  <text x="368" y="469" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">本地日志 / 会话库</text>
+
+  <line x1="300" y1="486" x2="300" y2="512" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <text x="312" y="506" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">只读 · 不写回工具目录</text>
+
+  <rect x="88" y="516" width="404" height="64" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="290" y="544" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="700" fill="#1d4ed8">ai-usage-agent</text>
+  <text x="290" y="564" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">探测 · 解析 · 30 min 聚合 · 增量上报</text>
+
+  <g filter="url(#shadow)">
+    <rect x="580" y="404" width="460" height="200" rx="16" fill="#fff" stroke="#fed7aa"/>
+  </g>
+  <rect x="580" y="404" width="8" height="200" rx="4" fill="#d97706"/>
+  <text x="608" y="432" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="14" font-weight="700" fill="#9a3412">宿主机 B … N</text>
+  <text x="720" y="432" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="12" fill="#64748b">同一二进制 · 各自 token</text>
+
+  <rect x="608" y="450" width="108" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="662" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Claude Code</text>
+  <rect x="724" y="450" width="72" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="760" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Codex</text>
+  <rect x="804" y="450" width="64" height="28" rx="14" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="836" y="469" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#9a3412">Grok</text>
+  <text x="888" y="469" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#94a3b8">未安装则跳过</text>
+
+  <line x1="800" y1="486" x2="800" y2="512" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arr)"/>
+  <text x="812" y="506" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">只读 · 不写回工具目录</text>
+
+  <rect x="608" y="516" width="404" height="64" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="810" y="544" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14" font-weight="700" fill="#1d4ed8">ai-usage-agent</text>
+  <text x="810" y="564" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="11" fill="#64748b">探测 · 解析 · 30 min 聚合 · 增量上报</text>
+</svg>
