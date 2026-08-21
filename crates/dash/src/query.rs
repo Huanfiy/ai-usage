@@ -568,15 +568,8 @@ mod tests {
         let midnight = Utc.with_ymd_and_hms(2026, 8, 21, 0, 0, 0).unwrap();
         let mid = Utc.with_ymd_and_hms(2026, 8, 21, 9, 47, 0).unwrap();
         let from = midnight - Duration::days(7);
-        let open = QueryFilter::from_params(
-            Some(from),
-            Some(midnight),
-            None,
-            None,
-            None,
-            None,
-            false,
-        );
+        let open =
+            QueryFilter::from_params(Some(from), Some(midnight), None, None, None, None, false);
         let live = QueryFilter::from_params(Some(from), Some(mid), None, None, None, None, false);
         assert!(open.use_rollups() && live.use_rollups());
         assert_eq!(open.rollup_day_bounds().1, "2026-08-21");

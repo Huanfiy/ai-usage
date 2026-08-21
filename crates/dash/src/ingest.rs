@@ -92,12 +92,7 @@ fn bucket_host_id(machine_host_id: &str, bucket: &UsageBucket) -> Option<String>
     }
 }
 
-fn upsert_account_host(
-    conn: &Connection,
-    host_id: &str,
-    label: &str,
-    now: &str,
-) -> Result<()> {
+fn upsert_account_host(conn: &Connection, host_id: &str, label: &str, now: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO hosts(host_id, hostname, last_seen, agent_version)
          VALUES(?1, ?2, ?3, NULL)
@@ -398,8 +393,9 @@ mod tests {
             assert_eq!(r1.ingested, 1);
             assert_eq!(r2.ingested, 1);
             let n: i64 = c.query_row("SELECT COUNT(*) FROM usage_buckets", [], |r| r.get(0))?;
-            let sum: i64 =
-                c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| r.get(0))?;
+            let sum: i64 = c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| {
+                r.get(0)
+            })?;
             assert_eq!(n, 1);
             assert_eq!(sum, 100);
             let hid: String = c.query_row("SELECT host_id FROM usage_buckets", [], |r| r.get(0))?;
@@ -416,11 +412,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
         db.with(|c| {
-            ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&hash_a(), "a@x.com", 10)]);
-            ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&hash_b(), "b@y.com", 20)]);
+            ingest_one(
+                c,
+                "hostA",
+                "pc1",
+                vec![cursor_bucket(&hash_a(), "a@x.com", 10)],
+            );
+            ingest_one(
+                c,
+                "hostB",
+                "pc2",
+                vec![cursor_bucket(&hash_b(), "b@y.com", 20)],
+            );
             let n: i64 = c.query_row("SELECT COUNT(*) FROM usage_buckets", [], |r| r.get(0))?;
-            let sum: i64 =
-                c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| r.get(0))?;
+            let sum: i64 = c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| {
+                r.get(0)
+            })?;
             assert_eq!(n, 2);
             assert_eq!(sum, 30);
             Ok(())
@@ -433,7 +440,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
         db.with(|c| {
-            let cases = ["", "abc", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "gggggggggggggggggggggggggggggggg"];
+            let cases = [
+                "",
+                "abc",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "gggggggggggggggggggggggggggggggg",
+            ];
             for hash in cases {
                 let r = ingest_one(c, "host1", "a", vec![cursor_bucket(hash, "a@x.com", 5)]);
                 assert_eq!(r.dropped.buckets, 1, "hash={hash:?}");
