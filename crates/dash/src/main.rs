@@ -19,7 +19,11 @@ use http::AppState;
 use pricing::PriceBook;
 
 #[derive(Parser)]
-#[command(name = "ai-usage-dash", version, about = "AI 用量看板：接收上报、聚合、展示")]
+#[command(
+    name = "ai-usage-dash",
+    version,
+    about = "AI 用量看板：接收上报、聚合、展示"
+)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -80,7 +84,9 @@ async fn main() {
 
 async fn run() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
     let cli = Cli::parse();
     let config_path = config::resolve_config(cli.config.as_ref());
@@ -98,7 +104,10 @@ async fn run() -> Result<()> {
                 cfg.bind = b;
             }
             if !cfg.is_loopback_bind() && cfg.ui_token.is_empty() && !behind_proxy {
-                bail!("绑定 {} 需要设置 ui_token（dash.toml）或加 --behind-proxy", cfg.bind);
+                bail!(
+                    "绑定 {} 需要设置 ui_token（dash.toml）或加 --behind-proxy",
+                    cfg.bind
+                );
             }
             if !config_path.exists() {
                 cfg.save(&config_path)?;
@@ -108,7 +117,10 @@ async fn run() -> Result<()> {
                 println!("已创建本机 ingest token（只显示一次）:");
                 println!("  token:   {token}");
                 println!("  host_id: {host_id}");
-                println!("采集端: ai-usage-agent init --url http://{} --token {token}", cfg.bind);
+                println!(
+                    "采集端: ai-usage-agent init --url http://{} --token {token}",
+                    cfg.bind
+                );
             }
             let state = AppState {
                 db: Arc::new(db),
@@ -158,7 +170,10 @@ async fn run() -> Result<()> {
         Commands::Pricing { cmd } => match cmd {
             PricingCmd::Update => {
                 let n = pricing::fetch_and_store(&data_dir)?;
-                println!("已更新 {n} 条模型报价 → {}", data_dir.join("pricing.json").display());
+                println!(
+                    "已更新 {n} 条模型报价 → {}",
+                    data_dir.join("pricing.json").display()
+                );
             }
         },
     }

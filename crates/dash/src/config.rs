@@ -35,8 +35,8 @@ impl DashConfig {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("读取 {}", path.display()))?;
+        let raw =
+            std::fs::read_to_string(path).with_context(|| format!("读取 {}", path.display()))?;
         Ok(toml::from_str(&raw).context("解析 dash.toml 失败")?)
     }
 

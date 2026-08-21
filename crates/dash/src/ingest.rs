@@ -79,12 +79,7 @@ enum Upsert {
     Protected,
 }
 
-fn upsert_bucket(
-    conn: &Connection,
-    host_id: &str,
-    b: &UsageBucket,
-    now: &str,
-) -> Result<Upsert> {
+fn upsert_bucket(conn: &Connection, host_id: &str, b: &UsageBucket, now: &str) -> Result<Upsert> {
     let start = b.bucket_start.to_rfc3339();
     let old: Option<OldBucket> = conn
         .query_row(
@@ -273,11 +268,7 @@ mod tests {
             };
             let r2 = ingest(c, "host1", "a", Some("0.1.0"), req)?;
             assert_eq!(r2.protected.buckets, 1);
-            let n: i64 = c.query_row(
-                "SELECT input_tokens FROM usage_buckets",
-                [],
-                |r| r.get(0),
-            )?;
+            let n: i64 = c.query_row("SELECT input_tokens FROM usage_buckets", [], |r| r.get(0))?;
             assert_eq!(n, 100);
             Ok(())
         })

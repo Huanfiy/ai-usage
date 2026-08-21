@@ -83,7 +83,11 @@ impl PriceBook {
         let mut best: Option<(&String, &ModelPrice)> = None;
         for (k, v) in &self.index {
             if n.starts_with(k) || k.starts_with(&n) {
-                if best.as_ref().map(|(bk, _)| k.len() > bk.len()).unwrap_or(true) {
+                if best
+                    .as_ref()
+                    .map(|(bk, _)| k.len() > bk.len())
+                    .unwrap_or(true)
+                {
                     best = Some((k, v));
                 }
             }
@@ -219,7 +223,10 @@ pub fn fetch_and_store(data_dir: &Path) -> Result<usize> {
         models,
     };
     let n = file.models.len();
-    std::fs::write(data_dir.join("pricing.json"), serde_json::to_vec_pretty(&file)?)?;
+    std::fs::write(
+        data_dir.join("pricing.json"),
+        serde_json::to_vec_pretty(&file)?,
+    )?;
     Ok(n)
 }
 
