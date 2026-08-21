@@ -94,15 +94,31 @@ export const api = {
   breakdown: (q: Query, by: string) => get<{ items: BreakdownItem[] }>('/v1/breakdown' + qs({ ...q, by })),
   distributions: (q: Query) => get<Distributions>('/v1/distributions' + qs(q)),
   activity: (q: Query) => get<Activity>('/v1/activity' + qs(q)),
-  sessions: (q: Query) => get<{ items: SessionRow[] }>('/v1/sessions' + qs({ ...q, limit: 80 })),
+  sessions: (q: Query) => get<{ items: SessionRow[] }>('/v1/sessions' + qs({ ...q, limit: 200 })),
   hosts: () => get<{ items: HostRow[] }>('/v1/hosts'),
   filters: (q: Query) => get<{ sources: string[]; models: string[]; projects: string[] }>('/v1/filters' + qs(q)),
-  tokens: () => get<{ items: Array<Record<string, string | null>> }>('/v1/tokens'),
-  createToken: (hostname?: string) =>
-    fetch('/v1/tokens', {
+  tokens: () =>
+    get<{
+      items: Array<{
+        token_prefix: string
+        host_id: string
+        label: string | null
+        created_at: string
+        revoked_at: string | null
+        hostname: string
+      }>
+    }>('/v1/tokens'),
+  createToken: async (hostname?: string) => {
+    const r = await fetch('/v1/tokens', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ hostname: hostname || 'unnamed' }),
-    }).then((r) => r.json()),
-  revokeToken: (hostId: string) => fetch(`/v1/tokens/${hostId}`, { method: 'DELETE' }),
+    })
+    if (!r.ok) throw new Error(`/v1/tokens ${r.status}`)
+    return r.json() as Promise<{ token: string; host_id: string; token_prefix: string }>
+  },
+  revokeToken: async (hostId: string) => {
+    const r = await fetch(`/v1/tokens/${hostId}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`/v1/tokens/${hostId} ${r.status}`)
+  },
 }

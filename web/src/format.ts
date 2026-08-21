@@ -8,6 +8,17 @@ export function fmtTokens(n: number): string {
   return String(Math.round(x))
 }
 
+export function fmtInt(n: number): string {
+  return Math.round(Number(n) || 0).toLocaleString('zh-CN')
+}
+
+export function fmtAxisTokens(n: number): string {
+  const x = Number(n) || 0
+  if (x >= 1_000_000) return (x / 1_000_000).toFixed(x >= 10_000_000 ? 0 : 1) + 'M'
+  if (x >= 1000) return Math.round(x / 1000) + 'k'
+  return String(Math.round(x))
+}
+
 export function fmtUsd(n: number): string {
   const x = Number(n) || 0
   if (x >= 100) return '$' + x.toFixed(0)

@@ -1,17 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import type { ActivityCell } from '../api'
-import { fmtMetric, type Metric } from '../format'
+import { fmtTokens } from '../format'
 
 const props = defineProps<{ cells: ActivityCell[] }>()
-
-const metric = ref<Metric>('tokens')
 
 const DAYS = ['日', '一', '二', '三', '四', '五', '六']
 
 const COL_EMPTY = { r: 24, g: 30, b: 39 }
 const COL_MINT = { r: 62, g: 224, b: 179 }
-const COL_AMBER = { r: 232, g: 177, b: 90 }
 
 function hex(c: number): string {
   return Math.round(c).toString(16).padStart(2, '0')
@@ -29,10 +26,10 @@ function mix(
   return `#${hex(r)}${hex(g)}${hex(b)}`
 }
 
-function cellFill(v: number, max: number, cost: boolean): string {
+function cellFill(v: number, max: number): string {
   if (v <= 0 || max <= 0) return mix(COL_EMPTY, COL_EMPTY, 0)
   const t = Math.sqrt(v / max)
-  return mix(COL_EMPTY, cost ? COL_AMBER : COL_MINT, 0.28 + 0.72 * t)
+  return mix(COL_EMPTY, COL_MINT, 0.28 + 0.72 * t)
 }
 
 const layout = {
@@ -50,15 +47,13 @@ const svgH = layout.padT + 7 * step - layout.gap + layout.padB
 
 const grid = computed(() => {
   const g = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0))
-  // UTC (dow, hour) → local by a fixed offset; DST not applied.
   const off = Math.round(-new Date().getTimezoneOffset() / 60)
   for (const c of props.cells) {
     const dow = ((Number(c.dow) % 7) + 7) % 7
     const hour = ((Number(c.hour) % 24) + 24) % 24
     let idx = dow * 24 + hour + off
     idx = ((idx % 168) + 168) % 168
-    const v = metric.value === 'tokens' ? Number(c.tokens) || 0 : Number(c.cost_usd) || 0
-    g[Math.floor(idx / 24)][idx % 24] += v
+    g[Math.floor(idx / 24)][idx % 24] += Number(c.tokens) || 0
   }
   const max = Math.max(0, ...g.flat())
   return { g, max }
@@ -69,15 +64,12 @@ const legendStops = [0, 0.33, 0.66, 1]
 </script>
 
 <template>
-  <div class="card">
+  <div class="card heat-card">
     <div class="card-head">
       <h2>分时活跃</h2>
-      <div class="tabs">
-        <button :class="{ active: metric === 'tokens' }" @click="metric = 'tokens'">Token</button>
-        <button :class="{ active: metric === 'cost' }" @click="metric = 'cost'">费用</button>
-      </div>
+      <span class="heat-metric">Token</span>
     </div>
-    <svg class="heat" :viewBox="`0 0 ${svgW} ${svgH}`" role="img" aria-label="7×24 分时热力图">
+    <svg class="heat" :viewBox="`0 0 ${svgW} ${svgH}`" role="img" aria-label="7×24 Token 分时热力图">
       <text
         v-for="h in hourLabels"
         :key="'h' + h"
@@ -107,9 +99,9 @@ const legendStops = [0, 0.33, 0.66, 1]
           :width="layout.cell"
           :height="layout.cell"
           rx="2"
-          :fill="cellFill(v, grid.max, metric === 'cost')"
+          :fill="cellFill(v, grid.max)"
         >
-          <title>{{ DAYS[di] }} {{ hi }}:00 · {{ fmtMetric(metric, v) }}</title>
+          <title>{{ DAYS[di] }} {{ hi }}:00 · {{ fmtTokens(v) }}</title>
         </rect>
       </g>
       <text class="axis" :x="layout.padL" :y="svgH - 6">少</text>
@@ -121,7 +113,7 @@ const legendStops = [0, 0.33, 0.66, 1]
         :width="layout.cell"
         :height="10"
         rx="2"
-        :fill="cellFill(t === 0 ? 0 : t, 1, metric === 'cost')"
+        :fill="cellFill(t === 0 ? 0 : t, 1)"
       />
       <text class="axis" :x="layout.padL + 18 + 4 * (layout.cell + 2) + 4" :y="svgH - 6">多</text>
     </svg>
@@ -129,6 +121,9 @@ const legendStops = [0, 0.33, 0.66, 1]
 </template>
 
 <style scoped>
+.heat-card {
+  min-width: 0;
+}
 .heat {
   width: 100%;
   height: auto;
@@ -137,5 +132,10 @@ const legendStops = [0, 0.33, 0.66, 1]
 .axis {
   fill: var(--muted);
   font-size: 9px;
+}
+.heat-metric {
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
 }
 </style>
