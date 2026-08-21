@@ -75,7 +75,9 @@ const query = computed(() => ({
 const sourceOpts = computed(() => options.value.sources.map((s) => ({ value: s, label: s })))
 const modelOpts = computed(() => options.value.models.map((m) => ({ value: m, label: m })))
 const projectOpts = computed(() => options.value.projects.map((p) => ({ value: p, label: p })))
-const hostOpts = computed(() => hosts.value.map((h) => ({ value: h.host_id, label: h.hostname })))
+const hostOpts = computed(() =>
+  hosts.value.map((h) => ({ value: h.host_id, label: hostLabel(h.host_id, h.hostname) })),
+)
 
 function asList(v: BreakdownItem[] | undefined): BreakdownItem[] {
   return Array.isArray(v) ? v : []
@@ -146,9 +148,14 @@ onUnmounted(() => window.removeEventListener('popstate', onPop))
 
 const hostLabels = computed(() => {
   const m: Record<string, string> = {}
-  for (const h of hosts.value) m[h.host_id] = h.hostname
+  for (const h of hosts.value) m[h.host_id] = hostLabel(h.host_id, h.hostname)
   return m
 })
+
+function hostLabel(hostId: string, hostname: string): string {
+  if (hostId.startsWith('acct:')) return `账号 · ${hostname}`
+  return hostname
+}
 </script>
 
 <template>

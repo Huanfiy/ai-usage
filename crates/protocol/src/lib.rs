@@ -14,11 +14,23 @@ pub const SESSION_BATCH: usize = 500;
 pub const SOURCE_CLAUDE_CODE: &str = "claude-code";
 pub const SOURCE_CODEX: &str = "codex";
 pub const SOURCE_GROK: &str = "grok";
+pub const SOURCE_CURSOR: &str = "cursor";
 
-pub const KNOWN_SOURCES: &[&str] = &[SOURCE_CLAUDE_CODE, SOURCE_CODEX, SOURCE_GROK];
+pub const KNOWN_SOURCES: &[&str] = &[
+    SOURCE_CLAUDE_CODE,
+    SOURCE_CODEX,
+    SOURCE_GROK,
+    SOURCE_CURSOR,
+];
 
 pub fn is_known_source(source: &str) -> bool {
     KNOWN_SOURCES.contains(&source)
+}
+
+/// Account-scoped sources rewrite ingest identity to `acct:<hash>` so the same
+/// login on two machines is one row, not two.
+pub fn is_account_scoped(source: &str) -> bool {
+    source == SOURCE_CURSOR
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +69,12 @@ pub struct UsageBucket {
     pub reasoning_output_tokens: i64,
     #[serde(default)]
     pub total_tokens: i64,
+    /// SHA-256 prefix of the cloud account id. Empty means a machine-scoped source.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account_hash: String,
+    /// Display label for the account row (email, else a short hash).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account_label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +99,8 @@ impl UsageBucket {
         self.source = clamp(&self.source, 64);
         self.model = clamp_nonempty(&self.model, 100);
         self.project = clamp_nonempty(&self.project, 200);
+        self.account_hash = clamp(&self.account_hash, 64);
+        self.account_label = clamp(&self.account_label, 200);
         self.input_tokens = self.input_tokens.max(0);
         self.output_tokens = self.output_tokens.max(0);
         self.cache_read_input_tokens = self.cache_read_input_tokens.max(0);
@@ -100,14 +120,28 @@ impl UsageBucket {
     }
 
     /// Client-side identity (host is assigned by the server from the token).
+    ///
+    /// Account-scoped buckets include `account_hash` so switching logins on one
+    /// machine does not collide incremental state.
     pub fn client_key(&self) -> String {
-        format!(
-            "{}|{}|{}|{}",
-            self.source,
-            self.model,
-            self.project,
-            self.bucket_start.to_rfc3339()
-        )
+        if self.account_hash.is_empty() {
+            format!(
+                "{}|{}|{}|{}",
+                self.source,
+                self.model,
+                self.project,
+                self.bucket_start.to_rfc3339()
+            )
+        } else {
+            format!(
+                "{}|{}|{}|{}|{}",
+                self.source,
+                self.account_hash,
+                self.model,
+                self.project,
+                self.bucket_start.to_rfc3339()
+            )
+        }
     }
 
     pub fn content_hash(&self) -> String {
@@ -202,6 +236,21 @@ pub fn host_id_from_token(token: &str) -> String {
     hex::encode(&Sha256::digest(token.as_bytes())[..16])
 }
 
+/// Account identity stored as `hosts.host_id`. `hash` must already be validated.
+pub fn account_host_id(hash: &str) -> String {
+    format!("acct:{hash}")
+}
+
+/// SHA-256 prefix of the cloud subject, same width as [`host_id_from_token`].
+pub fn account_hash_from_sub(sub: &str) -> String {
+    hex::encode(&Sha256::digest(sub.as_bytes())[..16])
+}
+
+/// Exactly 32 lowercase hex chars. Dash must not concatenate untrusted text into `host_id`.
+pub fn is_valid_account_hash(hash: &str) -> bool {
+    hash.len() == 32 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 fn hash_parts(parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
     for (i, p) in parts.iter().enumerate() {
@@ -266,9 +315,89 @@ mod tests {
             cache_creation_input_tokens: 0,
             reasoning_output_tokens: 4,
             total_tokens: 0,
+            account_hash: String::new(),
+            account_label: String::new(),
         }
         .normalize();
         assert_eq!(b.content_hash(), b.clone().content_hash());
         assert_eq!(b.total_tokens, 10);
+    }
+
+    #[test]
+    fn missing_account_fields_default_empty() {
+        let json = r#"{
+            "source":"codex",
+            "model":"gpt-5.4",
+            "project":"demo",
+            "bucket_start":"2026-01-15T10:00:00Z"
+        }"#;
+        let b: UsageBucket = serde_json::from_str(json).unwrap();
+        assert!(b.account_hash.is_empty());
+        assert!(b.account_label.is_empty());
+    }
+
+    #[test]
+    fn account_hash_helpers() {
+        let hash = account_hash_from_sub("user_abc");
+        assert!(is_valid_account_hash(&hash));
+        assert_eq!(hash.len(), 32);
+        assert_eq!(account_host_id(&hash), format!("acct:{hash}"));
+        assert!(!is_valid_account_hash(""));
+        assert!(!is_valid_account_hash(&hash.to_uppercase()));
+        assert!(!is_valid_account_hash("gggggggggggggggggggggggggggggggg"));
+        assert!(!is_valid_account_hash("abc"));
+    }
+
+    #[test]
+    fn client_key_includes_account_hash() {
+        let ts = DateTime::parse_from_rfc3339("2026-01-15T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut b = UsageBucket {
+            source: SOURCE_CURSOR.into(),
+            model: "composer-1".into(),
+            project: "unknown".into(),
+            bucket_start: ts,
+            input_tokens: 1,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
+            account_hash: String::new(),
+            account_label: String::new(),
+        };
+        let machine = b.client_key();
+        b.account_hash = account_hash_from_sub("acct-a");
+        let a = b.client_key();
+        b.account_hash = account_hash_from_sub("acct-b");
+        let c = b.client_key();
+        assert_ne!(machine, a);
+        assert_ne!(a, c);
+        assert!(a.contains(&account_hash_from_sub("acct-a")));
+    }
+
+    #[test]
+    fn account_label_is_clamped() {
+        let ts = DateTime::parse_from_rfc3339("2026-01-15T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let b = UsageBucket {
+            source: SOURCE_CURSOR.into(),
+            model: "m".into(),
+            project: "p".into(),
+            bucket_start: ts,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
+            account_hash: "x".repeat(80),
+            account_label: "y".repeat(250),
+        }
+        .normalize();
+        assert_eq!(b.account_hash.chars().count(), 64);
+        assert_eq!(b.account_label.chars().count(), 200);
     }
 }

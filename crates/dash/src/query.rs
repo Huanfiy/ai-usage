@@ -580,6 +580,8 @@ mod tests {
             cache_creation_input_tokens: cache_write,
             reasoning_output_tokens: 0,
             total_tokens: input + output + cache_read + cache_write,
+            account_hash: String::new(),
+            account_label: String::new(),
         }
     }
 

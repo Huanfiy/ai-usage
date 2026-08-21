@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use ai_usage_parsers::{
-    parse_all, ClaudeCodeAdapter, CodexAdapter, GrokAdapter, ParseCtx, UsageAdapter,
+    parse_all, AdapterEnv, ClaudeCodeAdapter, CodexAdapter, CursorAdapter, GrokAdapter, ParseCtx,
+    UsageAdapter,
 };
 use ai_usage_protocol::session_hash_from_id;
 
@@ -94,15 +95,34 @@ fn grok_splits_model_usage_and_cache() {
 }
 
 #[test]
-fn parse_all_runs_three_adapters() {
+fn parse_all_runs_registered_adapters() {
     let tmp = tempfile::tempdir().unwrap();
     let ctx = fixture_ctx(&tmp);
     let results = parse_all(&ctx, 4);
     let ids: Vec<_> = results.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["claude-code", "codex", "grok"]);
+    assert_eq!(ids, ["claude-code", "codex", "grok", "cursor"]);
     let buckets: i64 = results
         .iter()
         .map(|(_, r)| r.buckets.iter().map(|b| b.total_tokens).sum::<i64>())
         .sum();
     assert!(buckets > 0);
+    let cursor = results.iter().find(|(id, _)| id == "cursor").unwrap();
+    assert!(!cursor.1.skipped);
+    assert!(cursor.1.buckets.is_empty());
+}
+
+#[test]
+fn cursor_detects_explicit_state_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("state.vscdb");
+    std::fs::write(&db, b"").unwrap();
+    let ctx = ParseCtx {
+        home: fixture_home(),
+        cache_dir: tmp.path().join("cache"),
+        env: AdapterEnv {
+            cursor_state_db: Some(db.clone()),
+            ..AdapterEnv::default()
+        },
+    };
+    assert_eq!(CursorAdapter.detect(&ctx), vec![db]);
 }

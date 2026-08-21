@@ -2,6 +2,7 @@ mod agg;
 mod cache;
 mod claude;
 mod codex;
+mod cursor;
 mod grok;
 mod util;
 
@@ -12,6 +13,7 @@ use ai_usage_protocol::{UsageBucket, UsageSession};
 
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
+pub use cursor::CursorAdapter;
 pub use grok::GrokAdapter;
 
 #[derive(Debug, Clone, Default)]
@@ -21,6 +23,7 @@ pub struct AdapterEnv {
     pub codex_home: Option<PathBuf>,
     pub extra_codex_home: Option<PathBuf>,
     pub grok_home: Option<PathBuf>,
+    pub cursor_state_db: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +62,7 @@ pub fn default_adapters() -> Vec<Box<dyn UsageAdapter>> {
         Box::new(ClaudeCodeAdapter),
         Box::new(CodexAdapter),
         Box::new(GrokAdapter),
+        Box::new(CursorAdapter),
     ]
 }
 

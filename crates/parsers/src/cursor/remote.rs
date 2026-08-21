@@ -1,0 +1,83 @@
+use std::time::Duration;
+
+const DEFAULT_BASE: &str = "https://cursor.com";
+const EXPORT_PATH: &str = "/api/dashboard/export-usage-events-csv?strategy=tokens";
+const SESSION_COOKIE: &str = "WorkosCursorSessionToken";
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+const TIMEOUT_SECS: u64 = 20;
+
+#[derive(Debug)]
+pub enum FetchError {
+    Auth,
+    Network,
+    Status,
+}
+
+pub fn fetch_usage_csv(sub: &str, jwt: &str) -> Result<String, FetchError> {
+    let url = export_url();
+    let mut last_auth = false;
+    for cookie in cookie_values(sub, jwt) {
+        match get_csv(&url, &cookie) {
+            Ok(body) => return Ok(body),
+            Err(FetchError::Auth) => {
+                last_auth = true;
+                continue;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    if last_auth {
+        Err(FetchError::Auth)
+    } else {
+        Err(FetchError::Network)
+    }
+}
+
+fn export_url() -> String {
+    let base = std::env::var("CURSOR_WEB_BASE_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_BASE.to_string());
+    format!("{base}{EXPORT_PATH}")
+}
+
+fn cookie_values(sub: &str, jwt: &str) -> Vec<String> {
+    let encoded = format!("{}%3A%3A{jwt}", percent_encode(sub));
+    let raw = format!("{sub}%3A%3A{jwt}");
+    if encoded == raw {
+        vec![encoded]
+    } else {
+        vec![encoded, raw]
+    }
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn get_csv(url: &str, cookie_value: &str) -> Result<String, FetchError> {
+    let resp = ureq::get(url)
+        .set("Cookie", &format!("{SESSION_COOKIE}={cookie_value}"))
+        .set("Accept", "text/csv,*/*;q=0.8")
+        .set("Origin", DEFAULT_BASE)
+        .set("Referer", "https://cursor.com/dashboard?tab=usage")
+        .set("User-Agent", UA)
+        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .call();
+    match resp {
+        Ok(resp) => resp.into_string().map_err(|_| FetchError::Network),
+        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => Err(FetchError::Auth),
+        Err(ureq::Error::Status(_, _)) => Err(FetchError::Status),
+        Err(_) => Err(FetchError::Network),
+    }
+}

@@ -12,7 +12,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 | 看板端 | `ai-usage-dash` |
 | 语言 | Rust workspace；看板 UI 为 Vue 3 + Vite |
 | 自身文件 | XDG；`--config` / `--data-dir` 可改 |
-| 解析器 | Claude Code、Codex、Grok |
+| 解析器 | Claude Code、Codex、Grok、Cursor |
 
 架构：[docs/design/architecture.md](docs/design/architecture.md)。解析边界：[docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。需求原文：`goal.md`。冲突以代码与 `docs/design/` 为准。
 
@@ -25,6 +25,7 @@ crates/agent/      ai-usage-agent
 crates/dash/       ai-usage-dash（嵌入 UI 与价目快照）
 web/               Vue SPA
 fixtures/home/     解析器测试用伪造 $HOME
+fixtures/cursor/   Cursor CSV 夹具
 deploy/            systemd 与 Dockerfile.dash
 docs/design/       系统架构与解析边界
 scripts/           价目快照脚本

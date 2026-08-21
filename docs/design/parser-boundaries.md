@@ -20,7 +20,7 @@
 
 `cache_read` 与 `cache_creation` 必须分字段保留。Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，折进 `input` 后费用无法回补。Codex 无 `cache_creation`，该字段为 0。`total_tokens` 为五项之和（含 `cache_read` / `cache_creation`）。
 
-桶时间按 UTC 半小时对齐；主机身份由 ingest token 派生，不进入解析维度。
+桶时间按 UTC 半小时对齐。Claude / Codex / Grok 的主机身份由 ingest token 派生，不进入解析维度。Cursor 是账号级源：解析器带上 `account_hash`，ingest 改写为 `acct:<hash>`。
 
 ## 已接入源
 
@@ -32,7 +32,7 @@
 
 **计入**：`projects/` 出 token 与 session；`transcripts/` 只补尚未在 `projects/` 出现的 session，不计 token。同一 `session_id` 多副本按体积与 mtime 取最完整一份。只从 `type=assistant` 且带 `message.usage` 的记录取 token；`message.id` + `requestId`（否则 `uuid`）去重，保留用量更大的一条。
 
-**不计**：Claude Desktop Cowork 在 Electron user-data 下的 `local-agent-mode-sessions/**/.claude`。该路径属于 GUI 私有目录，与已排除的 Cursor 同类，不并入 `~/.claude` 扫描。
+**不计**：Claude Desktop Cowork 在 Electron user-data 下的 `local-agent-mode-sessions/**/.claude`。该路径属于 GUI 私有目录，不并入 `~/.claude` 扫描。
 
 ### Codex（`codex`）
 
@@ -50,9 +50,19 @@
 
 **不计**：encoded cwd 超长时 group 目录 sidecar `.cwd`。有 `summary.json` 的 `info.cwd` 或 `git_root_dir` 时不依赖该文件。未出现真实超长路径前不增加扫描分支。
 
+### Cursor（`cursor`）
+
+**扫描根**：本机 Cursor user-data 里的 `state.vscdb`（Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb` 或 `~/.config/Cursor/…`；macOS Application Support；Windows `%APPDATA%\Cursor`）。可用 `CURSOR_STATE_DB_PATH` 覆盖。有该文件即视为已安装。只读打开，只取 `cursorAuth/accessToken` 与 `cursorAuth/cachedEmail`，禁止拷贝整库。
+
+**计入**：`GET cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens` 的全量 CSV。`Input (w/o Cache Write)` → `input`；`Input (w/ Cache Write)` → `cache_creation`（两列不相交，禁止折进 `input`）；`Cache Read` → `cache_read`；`Output Tokens` → `output`。`project = unknown`。五项全 0 的行跳过。`Cost` 忽略。每个桶带同一 `account_hash` / `account_label`（邮箱优先 `cachedEmail`，否则 JWT `email`，再否则短 hash）。CSV 禁止按时间窗截断。
+
+**不计**：本地 `bubbleId`、`agent-transcripts`、session。不做 hook，不配账号列表，不加采集开关。第一版只采当前这份 user-data 里登录的那一个账号。
+
+**失败**：登出或 401/403 记 warning 并 `skipped`（不入 `ok_sources`、不剪增量 state）；超时 / 5xx / 网络同样 `skipped`。
+
 ## 未接入
 
-新增采集源的准入写在 [architecture.md](architecture.md) 本阶段范围，不在本文展开实现。本阶段不接入 Cursor（本地 `tokenCount` 基本为 0，云端 CSV 需逐账号）。不追求全量 AI 编码工具覆盖。
+新增采集源的准入写在 [architecture.md](architecture.md) 本阶段范围，不在本文展开实现。不追求全量 AI 编码工具覆盖。
 
 ## 重开条件
 

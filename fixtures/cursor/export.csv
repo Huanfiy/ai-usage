@@ -1,0 +1,4 @@
+Date,Kind,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Cost
+"January 15, 2026, 10:17 AM",Chat,"composer, experimental",100,15,250,33,Included
+2026-01-15T10:45:00Z,Chat,composer-1,0,80,0,20,$1.23
+"January 15, 2026, 11:00 AM",Chat,composer-1,0,0,0,0,Included

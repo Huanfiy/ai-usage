@@ -155,6 +155,8 @@ pub fn entries_to_buckets(entries: &[UsageEntry]) -> Vec<UsageBucket> {
             cache_creation_input_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: 0,
+            account_hash: String::new(),
+            account_label: String::new(),
         });
         b.input_tokens += e.input_tokens;
         b.output_tokens += e.output_tokens;

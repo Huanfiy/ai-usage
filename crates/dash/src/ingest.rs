@@ -1,5 +1,6 @@
 use ai_usage_protocol::{
-    is_known_source, utc_day, IngestRequest, IngestResponse, UsageBucket, UsageSession,
+    account_host_id, is_account_scoped, is_known_source, is_valid_account_hash, utc_day,
+    IngestRequest, IngestResponse, UsageBucket, UsageSession,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -55,7 +56,14 @@ pub fn ingest(
             }
             continue;
         }
-        match upsert_bucket(&*tx, host_id, &bucket, &now)? {
+        let Some(hid) = bucket_host_id(host_id, &bucket) else {
+            resp.dropped.buckets += 1;
+            continue;
+        };
+        if is_account_scoped(&bucket.source) {
+            upsert_account_host(&*tx, &hid, &bucket.account_label, &now)?;
+        }
+        match upsert_bucket(&*tx, &hid, &bucket, &now)? {
             Upsert::Inserted | Upsert::Replaced => resp.ingested += 1,
             Upsert::Protected => resp.protected.buckets += 1,
         }
@@ -71,6 +79,38 @@ pub fn ingest(
     tx.commit()?;
     resp.dropped.unknown_sources = unknown;
     Ok(resp)
+}
+
+fn bucket_host_id(machine_host_id: &str, bucket: &UsageBucket) -> Option<String> {
+    if !is_account_scoped(&bucket.source) {
+        return Some(machine_host_id.to_string());
+    }
+    if is_valid_account_hash(&bucket.account_hash) {
+        Some(account_host_id(&bucket.account_hash))
+    } else {
+        None
+    }
+}
+
+fn upsert_account_host(
+    conn: &Connection,
+    host_id: &str,
+    label: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO hosts(host_id, hostname, last_seen, agent_version)
+         VALUES(?1, ?2, ?3, NULL)
+         ON CONFLICT(host_id) DO UPDATE SET
+           last_seen = excluded.last_seen,
+           hostname = CASE
+             WHEN excluded.hostname LIKE '%@%' THEN excluded.hostname
+             WHEN hosts.hostname = '' THEN excluded.hostname
+             ELSE hosts.hostname
+           END",
+        params![host_id, label, now],
+    )?;
+    Ok(())
 }
 
 enum Upsert {
@@ -242,6 +282,8 @@ mod tests {
             cache_creation_input_tokens: 0,
             reasoning_output_tokens: 0,
             total_tokens: tokens,
+            account_hash: String::new(),
+            account_label: String::new(),
         }
     }
 
@@ -281,7 +323,7 @@ mod tests {
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
         db.with(|c| {
             let mut b = sample_bucket(10);
-            b.source = "cursor".into();
+            b.source = "not-a-source".into();
             let req = IngestRequest {
                 schema_version: 1,
                 hostname: Some("a".into()),
@@ -291,7 +333,180 @@ mod tests {
             };
             let r = ingest(c, "host1", "a", None, req)?;
             assert_eq!(r.dropped.buckets, 1);
-            assert_eq!(r.dropped.unknown_sources, vec!["cursor".to_string()]);
+            assert_eq!(r.dropped.unknown_sources, vec!["not-a-source".to_string()]);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn cursor_bucket(hash: &str, label: &str, tokens: i64) -> UsageBucket {
+        let ts = Utc.with_ymd_and_hms(2026, 1, 15, 10, 17, 0).unwrap();
+        UsageBucket {
+            source: ai_usage_protocol::SOURCE_CURSOR.into(),
+            model: "composer-1".into(),
+            project: "unknown".into(),
+            bucket_start: round_to_half_hour(ts),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: tokens,
+            account_hash: hash.into(),
+            account_label: label.into(),
+        }
+    }
+
+    fn hash_a() -> String {
+        ai_usage_protocol::account_hash_from_sub("acct-alpha")
+    }
+
+    fn hash_b() -> String {
+        ai_usage_protocol::account_hash_from_sub("acct-beta")
+    }
+
+    fn ingest_one(
+        c: &Connection,
+        host: &str,
+        hostname: &str,
+        buckets: Vec<UsageBucket>,
+    ) -> IngestResponse {
+        ingest(
+            c,
+            host,
+            hostname,
+            Some("0.1.0"),
+            IngestRequest {
+                schema_version: 1,
+                hostname: Some(hostname.into()),
+                agent_version: Some("0.1.0".into()),
+                buckets,
+                sessions: vec![],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn same_account_from_two_machines_is_one_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = hash_a();
+            let r1 = ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&h, "a@x.com", 100)]);
+            let r2 = ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&h, "a@x.com", 100)]);
+            assert_eq!(r1.ingested, 1);
+            assert_eq!(r2.ingested, 1);
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM usage_buckets", [], |r| r.get(0))?;
+            let sum: i64 =
+                c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(n, 1);
+            assert_eq!(sum, 100);
+            let hid: String = c.query_row("SELECT host_id FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(hid, ai_usage_protocol::account_host_id(&h));
+            let hosts: i64 = c.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get(0))?;
+            assert_eq!(hosts, 3);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn two_accounts_are_not_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&hash_a(), "a@x.com", 10)]);
+            ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&hash_b(), "b@y.com", 20)]);
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM usage_buckets", [], |r| r.get(0))?;
+            let sum: i64 =
+                c.query_row("SELECT SUM(input_tokens) FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(n, 2);
+            assert_eq!(sum, 30);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cursor_without_valid_hash_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let cases = ["", "abc", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "gggggggggggggggggggggggggggggggg"];
+            for hash in cases {
+                let r = ingest_one(c, "host1", "a", vec![cursor_bucket(hash, "a@x.com", 5)]);
+                assert_eq!(r.dropped.buckets, 1, "hash={hash:?}");
+                assert!(r.dropped.unknown_sources.is_empty());
+            }
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(n, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn machine_source_ignores_account_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let mut b = sample_bucket(7);
+            b.account_hash = hash_a();
+            b.account_label = "a@x.com".into();
+            ingest_one(c, "host1", "a", vec![b]);
+            let hid: String = c.query_row("SELECT host_id FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(hid, "host1");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn account_live_window_keeps_larger_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = hash_a();
+            assert_eq!(
+                ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&h, "a@x.com", 100)]).ingested,
+                1
+            );
+            let r = ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&h, "a@x.com", 40)]);
+            assert_eq!(r.protected.buckets, 1);
+            let n: i64 = c.query_row("SELECT input_tokens FROM usage_buckets", [], |r| r.get(0))?;
+            assert_eq!(n, 100);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn account_label_email_wins_over_short_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = hash_a();
+            let hid = ai_usage_protocol::account_host_id(&h);
+            ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&h, "a@x.com", 1)]);
+            ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&h, &h[..8], 1)]);
+            let name: String = c.query_row(
+                "SELECT hostname FROM hosts WHERE host_id=?1",
+                params![hid],
+                |r| r.get(0),
+            )?;
+            assert_eq!(name, "a@x.com");
+
+            let h2 = hash_b();
+            let hid2 = ai_usage_protocol::account_host_id(&h2);
+            ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&h2, &h2[..8], 1)]);
+            ingest_one(c, "hostB", "pc2", vec![cursor_bucket(&h2, "b@y.com", 1)]);
+            let name2: String = c.query_row(
+                "SELECT hostname FROM hosts WHERE host_id=?1",
+                params![hid2],
+                |r| r.get(0),
+            )?;
+            assert_eq!(name2, "b@y.com");
             Ok(())
         })
         .unwrap();

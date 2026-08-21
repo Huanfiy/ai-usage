@@ -16,4 +16,4 @@ cargo build --release -p ai-usage-dash -p ai-usage-agent
 
 多机：看板部署到一台机器，各宿主机 agent 向外推送。Agent 不容器化。看板可选 `deploy/Dockerfile.dash`。
 
-首批解析器：Claude Code、Codex、Grok。费用来自构建期嵌入的 LiteLLM 价目快照（MIT），可用 `ai-usage-dash pricing update` 刷新数据目录缓存，查询时按归一化模型名计价；未知模型计入 token、排除出费用并给出 coverage%。
+首批解析器：Claude Code、Codex、Grok、Cursor。Cursor 用量来自账号 CSV（本机只读 JWT），按账号幂等、不按机器累加。费用来自构建期嵌入的 LiteLLM 价目快照（MIT），可用 `ai-usage-dash pricing update` 刷新数据目录缓存，查询时按归一化模型名计价；未知模型计入 token、排除出费用并给出 coverage%。

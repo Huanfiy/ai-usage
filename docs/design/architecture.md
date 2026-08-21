@@ -9,7 +9,7 @@
 | 双程序职责、部署拓扑、多主机身份 | crate / 模块拆分、表结构、CLI 细节 |
 | 归一化数据契约与端到端数据流 | 解析器内部算法、UI 组件结构 |
 | 费用估算在查询层的叠加方式 | 运维手册与发布流水线 |
-| 宿主机污染边界与信任模型 | 未落地的采集源（如 Cursor） |
+| 宿主机污染边界与信任模型 | 未落地的采集源 |
 
 需求中的「后端 / 前端」对应采集端 `ai-usage-agent` 与看板端 `ai-usage-dash`。
 
@@ -75,6 +75,8 @@ mindmap
 
 主机身份以 ingest token 派生的 `host_id` 为准。payload 里的 `hostname` 只作显示名，允许重复、允许改名。两台都叫 `ubuntu` 的机器不会串数据。跨主机「汇总」只发生在查询层；删除或吊销某一主机不改写其它主机的行。
 
+账号级源（目前仅 Cursor）例外：ingest 用校验过的 `account_hash` 把桶写到 `acct:<hash>`，同一登录在多机上报时落同一行，全机 `SUM` 只计一次。吊销某台机器的 ingest token 不删除该账号行。
+
 ![token 派生 host_id，hostname 仅显示](assets/identity.svg)
 
 查询接口同一套：不传 `host` 为全主机汇总，传入则为单机视图。看板提供 KPI（含窗口内消息与时长合计）、时间范围、工具 / 模型 / 项目 / 主机筛选、趋势、四维分布、分时热力图（Bucket 小时格）、session 列表、主机上次同步，以及 token 签发与吊销。
@@ -85,7 +87,8 @@ mindmap
 
 ```mermaid
 flowchart LR
-  logs[工具日志] -->|只读| parse[本机解析]
+  logs[Claude / Codex / Grok 日志] -->|只读| parse[本机解析]
+  cursor[Cursor：本机 JWT + 账号 CSV] -->|只读| parse
   parse --> norm[Bucket + Session]
   norm --> diff{相对本地 state<br/>content-hash}
   diff -->|未变| skip[不上报]
@@ -164,11 +167,9 @@ flowchart TB
 
 ## 本阶段范围
 
-已接入的采集源：Claude Code、Codex、Grok。各源扫描根、计入与明确不计见 [parser-boundaries.md](parser-boundaries.md)。某一源失败不影响其它源。
+已接入的采集源：Claude Code、Codex、Grok、Cursor。各源扫描根、计入与明确不计见 [parser-boundaries.md](parser-boundaries.md)。某一源失败不影响其它源。
 
 明确不做：
-
-- Cursor 采集：实测本地 `state.vscdb` 中约 99% 消息 `tokenCount` 为 0、仅约 4% 带模型名；云端 CSV 在多账号下需逐账号配置
 - 排行榜、设备码浏览器登录、往各工具写 `SKILL.md`
 - MITM / 网络拦截计量
 - Postgres 集群、多租户 SaaS
