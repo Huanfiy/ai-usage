@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const SNAPSHOT: &[u8] = include_bytes!("../pricing/litellm-snapshot.json");
+/// Cursor first-party list prices. Not refreshed by `pricing update`.
+const CURSOR_MODELS: &[u8] = include_bytes!("../pricing/cursor-models.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceBookFile {
@@ -54,6 +56,11 @@ impl PriceBook {
                 }
             }
         }
+        let cursor: PriceBookFile =
+            serde_json::from_slice(CURSOR_MODELS).context("嵌入 Cursor 报价损坏")?;
+        for (k, v) in cursor.models {
+            merged.entry(k).or_insert(v);
+        }
         if let Some(over) = override_path {
             if over.is_file() {
                 apply_override(&mut merged, over)?;
@@ -71,13 +78,18 @@ impl PriceBook {
 
     pub fn lookup(&self, model: &str) -> Option<&ModelPrice> {
         let n = normalize_model(model);
-        if let Some(p) = self.index.get(&n) {
+        if let Some(p) = self.lookup_exact(&n) {
             return Some(p);
         }
-        if let Some(stripped) = n.strip_suffix("-build") {
-            if let Some(p) = self.index.get(stripped) {
-                return Some(p);
+        if let Some(canon) = canonicalize_cursor_slug(&n) {
+            if canon != n {
+                if let Some(p) = self.lookup_exact(&canon) {
+                    return Some(p);
+                }
             }
+            // Do not prefix-match Fast onto standard (cursor-grok-4.6-xhigh-fast
+            // starts with cursor-grok-4.6).
+            return None;
         }
         // longest prefix: claude-opus-5-thinking → claude-opus-5
         let mut best: Option<(&String, &ModelPrice)> = None;
@@ -93,6 +105,14 @@ impl PriceBook {
             }
         }
         best.map(|(_, v)| v)
+    }
+
+    fn lookup_exact(&self, n: &str) -> Option<&ModelPrice> {
+        if let Some(p) = self.index.get(n) {
+            return Some(p);
+        }
+        n.strip_suffix("-build")
+            .and_then(|stripped| self.index.get(stripped))
     }
 
     pub fn cost_usd(&self, model: &str, tokens: TokenSlice) -> Option<f64> {
@@ -149,6 +169,22 @@ fn key_rank(key: &str) -> u8 {
     } else {
         0
     }
+}
+
+/// Cursor CSV slugs include effort (`xhigh`/`high`/…) before the speed tier.
+/// Pricing only distinguishes Fast vs standard, so drop effort tokens.
+fn canonicalize_cursor_slug(n: &str) -> Option<String> {
+    if !(n.starts_with("composer-") || n.starts_with("cursor-grok-")) {
+        return None;
+    }
+    let parts: Vec<&str> = n
+        .split('-')
+        .filter(|p| !matches!(*p, "xhigh" | "high" | "medium" | "low"))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("-"))
 }
 
 pub fn normalize_model(name: &str) -> String {
@@ -234,12 +270,58 @@ pub fn fetch_and_store(data_dir: &Path) -> Result<usize> {
 mod tests {
     use super::*;
 
+    fn empty_book() -> PriceBook {
+        PriceBook::load(Path::new("/tmp/does-not-exist-ai-usage"), None).unwrap()
+    }
+
     #[test]
     fn finds_canonical_models() {
-        let book = PriceBook::load(Path::new("/tmp/does-not-exist-ai-usage"), None).unwrap();
+        let book = empty_book();
         assert!(book.lookup("claude-opus-5").is_some());
         assert!(book.lookup("gpt-5.4").is_some());
         assert!(book.lookup("grok-4.6-build").is_some());
         assert!(book.lookup("xai/grok-4.6").is_some());
+    }
+
+    #[test]
+    fn cursor_first_party_uses_official_fast_vs_standard() {
+        let book = empty_book();
+        let composer_fast = book.lookup("composer-2.5-fast").unwrap();
+        let composer = book.lookup("composer-2.5").unwrap();
+        assert!(composer_fast.input > composer.input);
+
+        let grok_fast = book.lookup("cursor-grok-4.6-xhigh-fast").unwrap();
+        let grok_std = book.lookup("cursor-grok-4.6-high").unwrap();
+        assert_eq!(
+            grok_fast.input,
+            book.lookup("cursor-grok-4.6-fast").unwrap().input
+        );
+        assert_eq!(
+            grok_std.input,
+            book.lookup("cursor-grok-4.6").unwrap().input
+        );
+        assert!(grok_fast.input > grok_std.input);
+        assert_eq!(
+            book.lookup("cursor-grok-4.6-high-fast").unwrap().output,
+            book.lookup("cursor-grok-4.6-fast").unwrap().output
+        );
+
+        let million = TokenSlice {
+            input: 1_000_000,
+            ..TokenSlice::default()
+        };
+        let cost = book.cost_usd("composer-2.5-fast", million).unwrap();
+        assert!((cost - 3.0).abs() < 1e-9);
+        assert!(book.lookup("composer-1").is_none());
+    }
+
+    #[test]
+    fn cursor_fast_does_not_inherit_xai_grok_standard() {
+        let book = empty_book();
+        let xai = book.lookup("xai/grok-4.6").unwrap();
+        let cursor_fast = book.lookup("cursor-grok-4.6-xhigh-fast").unwrap();
+        assert!(cursor_fast.input > xai.input);
+        let grok45_fast = book.lookup("cursor-grok-4.5-medium-fast").unwrap();
+        assert_eq!(grok45_fast.output, 1.8e-5);
     }
 }

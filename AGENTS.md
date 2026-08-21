@@ -22,7 +22,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 crates/protocol/   ingest 契约
 crates/parsers/    解析器；夹具 fixtures/home/
 crates/agent/      ai-usage-agent
-crates/dash/       ai-usage-dash（嵌入 UI 与价目快照）
+crates/dash/       ai-usage-dash（嵌入 UI、LiteLLM 快照与 Cursor 自有价）
 web/               Vue SPA
 fixtures/home/     解析器测试用伪造 $HOME
 fixtures/cursor/   Cursor CSV 夹具

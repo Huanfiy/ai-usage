@@ -1,0 +1,54 @@
+{
+  "source": "https://cursor.com/docs/models-and-pricing",
+  "updated_at": "2026-08-21",
+  "models": {
+    "composer-2.5": {
+      "input": 5e-7,
+      "output": 2.5e-6,
+      "cache_read": 2e-7,
+      "cache_write": 5e-7
+    },
+    "composer-2.5-fast": {
+      "input": 3e-6,
+      "output": 1.5e-5,
+      "cache_read": 5e-7,
+      "cache_write": 3e-6
+    },
+    "cursor-grok-4.5": {
+      "input": 2e-6,
+      "output": 6e-6,
+      "cache_read": 5e-7,
+      "cache_write": 2e-6
+    },
+    "cursor-grok-4.5-fast": {
+      "input": 4e-6,
+      "output": 1.8e-5,
+      "cache_read": 1e-6,
+      "cache_write": 4e-6
+    },
+    "cursor-grok-4.6": {
+      "input": 2e-6,
+      "output": 6e-6,
+      "cache_read": 5e-7,
+      "cache_write": 2e-6
+    },
+    "cursor-grok-4.6-fast": {
+      "input": 4e-6,
+      "output": 1.2e-5,
+      "cache_read": 1e-6,
+      "cache_write": 4e-6
+    },
+    "grok-4.5-fast": {
+      "input": 4e-6,
+      "output": 1.8e-5,
+      "cache_read": 1e-6,
+      "cache_write": 4e-6
+    },
+    "grok-4.6-fast": {
+      "input": 4e-6,
+      "output": 1.2e-5,
+      "cache_read": 1e-6,
+      "cache_write": 4e-6
+    }
+  }
+}

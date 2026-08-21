@@ -121,19 +121,20 @@ sequenceDiagram
 
 采集端**不上报费用**。历史 token 行不因改价而重写。未知模型计入 token、排除出费用，并以 coverage 给出覆盖比例。这是估算，不是账单。
 
-权威默认源为 LiteLLM 价目表（MIT）：构建期裁成精简快照并嵌入看板，`serve` 不依赖网络。可选 `ai-usage-dash pricing update` 从 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` 刷新数据目录缓存；再可选本地 override。后者覆盖前者。不做运行时爬官方价目页，不依赖 OpenRouter。
+权威默认源为 LiteLLM 价目表（MIT）：构建期裁成精简快照并嵌入看板，`serve` 不依赖网络。可选 `ai-usage-dash pricing update` 从 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` 刷新数据目录缓存。LiteLLM 没有的 Cursor 自有模型（Composer 2.5、Cursor Grok 4.5/4.6 及 Fast 档）用构建期嵌入的官方列表价补缺（`crates/dash/pricing/cursor-models.json`），不随 `pricing update` 刷新，随本仓库版本更新。再可选本地 override，后者覆盖前者。不做运行时爬官方价目页，不依赖 OpenRouter。
 
 ```mermaid
 flowchart TB
   snap[嵌入快照 · 离线可用] --> merge[查询时价目表]
   cache[数据目录 pricing.json · 可选刷新] --> merge
+  cursor[嵌入 Cursor 自有模型价 · 仅补缺] --> merge
   over[pricing.override.json] --> merge
   tokens[已存 token 行] --> cost[估算 USD]
   merge --> cost
   cost --> out[费用 + coverage]
 ```
 
-模型 id 先去掉 `anthropic/`、`openai/` 等前缀再匹配。匹配失败记入 uncovered，不中断查询。
+模型 id 先去掉 `anthropic/`、`openai/` 等前缀再匹配。`composer-*` / `cursor-grok-*` 会去掉 effort 后缀（`xhigh`/`high`/`medium`/`low`）再匹配 Fast 与标准档，避免前缀误把 Fast 算成标准价。匹配失败记入 uncovered，不中断查询。
 
 ## 部署拓扑
 
