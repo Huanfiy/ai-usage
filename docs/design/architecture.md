@@ -7,7 +7,7 @@
 | 本文覆盖 | 本文不覆盖 |
 | --- | --- |
 | 双程序职责、部署拓扑、多主机身份 | crate / 模块拆分、表结构、CLI 细节 |
-| 归一化数据契约与端到端数据流 | 解析器实现、UI 组件结构 |
+| 归一化数据契约与端到端数据流 | 解析器内部算法、UI 组件结构 |
 | 费用估算在查询层的叠加方式 | 运维手册与发布流水线 |
 | 宿主机污染边界与信任模型 | 未落地的采集源（如 Cursor） |
 
@@ -31,7 +31,7 @@ mindmap
     契约
       schema_version
       Bucket / Session
-      cache 读写分字段
+      cache_read / cache_creation 分字段
       gzip + Bearer
     约束
       不写工具目录
@@ -61,7 +61,7 @@ mindmap
 
 两条轨道用途不同：
 
-- **Bucket**（30 min 窗）：费用与趋势的计量单元。维度为 `source × model × project × bucket_start`。`cache_read` 与 `cache_creation` 必须分字段——Anthropic cache write 约基价 1.25×、cache read 约 0.1×，单价差 12.5 倍，合并入库后费用无法回补。无 cache write 概念的源（如 Codex）该字段为 0。
+- **Bucket**（30 min 窗）：费用与趋势的计量单元。维度为 `source × model × project × bucket_start`。`cache_read` 与 `cache_creation` 必须分字段——Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，合并入库后费用无法回补。无 `cache_creation` 概念的源（如 Codex）该字段为 0。
 - **Session**：活跃度与明细列表。只有时间与条数，没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。
 
 幂等按主机隔离（`host_id` 由服务端 token 映射，不取自 payload）：
@@ -164,12 +164,12 @@ flowchart TB
 
 ## 本阶段范围
 
-已接入的采集源：Claude Code（`~/.claude`，以及 `$CLAUDE_CONFIG_DIR`、`~/.claude-*`）、Codex（`$CODEX_HOME` 的 `sessions` 与 `archived_sessions`）、Grok（`$GROK_HOME/sessions`）。某一源失败不影响其它源。
+已接入的采集源：Claude Code、Codex、Grok。各源扫描根、计入与明确不计见 [parser-boundaries.md](parser-boundaries.md)。某一源失败不影响其它源。
 
 明确不做：
 
 - Cursor 采集：实测本地 `state.vscdb` 中约 99% 消息 `tokenCount` 为 0、仅约 4% 带模型名；云端 CSV 在多账号下需逐账号配置
-- 全量解析器、排行榜、设备码浏览器登录、往各工具写 `SKILL.md`
+- 排行榜、设备码浏览器登录、往各工具写 `SKILL.md`
 - MITM / 网络拦截计量
 - Postgres 集群、多租户 SaaS
 - 把 agent 放进 Docker 当作默认安装方式

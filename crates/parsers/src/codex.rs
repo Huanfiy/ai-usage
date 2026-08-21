@@ -8,11 +8,13 @@ use serde_json::Value;
 use crate::agg::extract_sessions;
 use crate::cache;
 use crate::util::{
-    collect_jsonl, entries_to_buckets, expand_home, file_sig, guard_hash, parse_ts, project_from_path,
-    to_count_opt, FileSig, TimingEvent, UsageEntry,
+    collect_jsonl, entries_to_buckets, expand_home, file_sig, guard_hash, parse_ts,
+    project_from_path, to_count_opt, FileSig, TimingEvent, UsageEntry,
 };
 
 const SOURCE: &str = ai_usage_protocol::SOURCE_CODEX;
+/// Bump when token-accounting rules change so stale per-file caches are rebuilt.
+const CACHE_VERSION: u32 = 1;
 
 pub struct CodexAdapter;
 
@@ -67,7 +69,9 @@ impl UsageAdapter for CodexAdapter {
                     .then(b.sig.mtime_ms.cmp(&a.sig.mtime_ms))
                     .then(a.path.cmp(&b.path))
             });
-            let Some(best) = files.into_iter().next() else { continue };
+            let Some(best) = files.into_iter().next() else {
+                continue;
+            };
             match parse_file(&best, &ctx.cache_dir) {
                 Ok(parsed) => {
                     all_entries.extend(parsed.entries);
@@ -110,6 +114,8 @@ struct TokenTotals {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct FileCache {
+    #[serde(default)]
+    algorithm_version: u32,
     sig: FileSig,
     header: Header,
     parsed_bytes: u64,
@@ -118,7 +124,6 @@ struct FileCache {
     prev_total: Option<TokenTotals>,
     prev_cumulative_total: Option<i64>,
     turn_model: String,
-    skip_until_own_task: bool,
     first_session_meta_seen: bool,
     entries: Vec<UsageEntry>,
     events: Vec<TimingEvent>,
@@ -179,7 +184,9 @@ fn read_header(path: &Path, size: u64) -> Option<Header> {
         if obj.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
             return;
         }
-        let Some(payload) = obj.get("payload") else { return };
+        let Some(payload) = obj.get("payload") else {
+            return;
+        };
         found = Some(header_from_payload(payload, obj.get("timestamp")));
     });
     found
@@ -206,10 +213,7 @@ fn header_from_payload(payload: &Value, obj_ts: Option<&Value>) -> Header {
 }
 
 fn extract_project(meta: &Value) -> String {
-    if let Some(url) = meta
-        .pointer("/git/repository_url")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(url) = meta.pointer("/git/repository_url").and_then(|v| v.as_str()) {
         let trimmed = url.trim_end_matches(".git");
         if let Some((_, repo)) = trimmed.rsplit_once('/') {
             if !repo.is_empty() {
@@ -234,9 +238,17 @@ fn is_subagent(meta: &Value) -> bool {
     }
 }
 
+fn is_replay(header: &Header) -> bool {
+    header.is_subagent || header.forked_from_id.is_some()
+}
+
+fn cache_current(hit: &FileCache) -> bool {
+    hit.algorithm_version == CACHE_VERSION
+}
+
 fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
     let cache_file = cache::cache_path(cache_dir, "codex", &job.path);
-    let prior = cache::load::<FileCache>(&cache_file);
+    let prior = cache::load::<FileCache>(&cache_file).filter(cache_current);
     if let Some(hit) = &prior {
         if cache::sig_unchanged(&hit.sig, &job.sig) {
             return Ok(ParsedFile {
@@ -270,7 +282,6 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
     }
 
     let path_fallback = job.path.to_string_lossy().to_string();
-    let started_ms = state.header.session_started_ms;
 
     crate::util::read_jsonl_limited(&job.path, Some(end), start, &mut |obj| {
         let ty = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -278,8 +289,6 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
             if !state.first_session_meta_seen {
                 if let Some(payload) = obj.get("payload") {
                     state.header = header_from_payload(payload, obj.get("timestamp"));
-                    state.skip_until_own_task =
-                        state.header.is_subagent || state.header.forked_from_id.is_some();
                 }
                 state.first_session_meta_seen = true;
             }
@@ -294,7 +303,7 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
         } else {
             state.header.project.clone()
         };
-        let replay = state.header.is_subagent || state.header.forked_from_id.is_some();
+        let replay = is_replay(&state.header);
         if ty == "turn_context" {
             if let Some(model) = obj
                 .pointer("/payload/model")
@@ -302,24 +311,6 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
                 .filter(|s| !s.is_empty())
             {
                 state.turn_model = model.to_string();
-            }
-        }
-
-        if state.skip_until_own_task {
-            let is_task = obj.get("type").and_then(|v| v.as_str()) == Some("event_msg")
-                && matches!(
-                    obj.pointer("/payload/type").and_then(|v| v.as_str()),
-                    Some("task_started" | "turn_started")
-                );
-            let ts_ok = obj
-                .get("timestamp")
-                .and_then(parse_ts)
-                .map(|t| started_ms.map(|s| t.timestamp_millis() >= s).unwrap_or(true))
-                .unwrap_or(false);
-            if is_task && ts_ok {
-                state.skip_until_own_task = false;
-            } else {
-                return;
             }
         }
 
@@ -337,14 +328,18 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
             }
         }
 
-        if ty != "event_msg" {
+        if replay || ty != "event_msg" {
             return;
         }
-        let Some(payload) = obj.get("payload") else { return };
+        let Some(payload) = obj.get("payload") else {
+            return;
+        };
         if payload.get("type").and_then(|v| v.as_str()) != Some("token_count") {
             return;
         }
-        let Some(info) = payload.get("info") else { return };
+        let Some(info) = payload.get("info") else {
+            return;
+        };
 
         let cumulative_total = info
             .pointer("/total_token_usage/total_tokens")
@@ -366,7 +361,8 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
                         let delta = TokenTotals {
                             input_tokens: curr.input_tokens - prev.input_tokens,
                             output_tokens: curr.output_tokens - prev.output_tokens,
-                            cached_input_tokens: curr.cached_input_tokens - prev.cached_input_tokens,
+                            cached_input_tokens: curr.cached_input_tokens
+                                - prev.cached_input_tokens,
                             reasoning_output_tokens: curr.reasoning_output_tokens
                                 - prev.reasoning_output_tokens,
                         };
@@ -391,7 +387,9 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
             return;
         }
         let Some(usage) = usage else { return };
-        let Some(ts) = obj.get("timestamp").and_then(parse_ts) else { return };
+        let Some(ts) = obj.get("timestamp").and_then(parse_ts) else {
+            return;
+        };
         let model = info
             .get("model")
             .and_then(|v| v.as_str())
@@ -419,6 +417,7 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
         });
     });
 
+    state.algorithm_version = CACHE_VERSION;
     state.parsed_bytes = end;
     state.sig = job.sig.clone();
     if let Some((hash, ends_nl)) = guard_hash(&job.path, end) {
@@ -450,6 +449,7 @@ fn token_totals(v: &Value) -> TokenTotals {
 
 fn fresh_state(job: &FileJob) -> FileCache {
     FileCache {
+        algorithm_version: CACHE_VERSION,
         sig: job.sig.clone(),
         header: Header {
             project: "unknown".into(),
@@ -461,7 +461,6 @@ fn fresh_state(job: &FileJob) -> FileCache {
         prev_total: None,
         prev_cumulative_total: None,
         turn_model: "unknown".into(),
-        skip_until_own_task: false,
         first_session_meta_seen: false,
         entries: Vec::new(),
         events: Vec::new(),

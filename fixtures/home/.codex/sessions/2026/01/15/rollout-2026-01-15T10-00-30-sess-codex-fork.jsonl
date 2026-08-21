@@ -1,0 +1,4 @@
+{"timestamp":"2026-01-15T10:00:30Z","type":"session_meta","payload":{"id":"sess-codex-fork","timestamp":"2026-01-15T10:00:30Z","cwd":"/tmp/demo","forked_from_id":"sess-codex-1"}}
+{"timestamp":"2026-01-15T10:00:30Z","type":"turn_context","payload":{"model":"gpt-5.4"}}
+{"timestamp":"2026-01-15T10:00:30Z","type":"event_msg","payload":{"type":"task_started"}}
+{"timestamp":"2026-01-15T10:00:31Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":999,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0},"total_token_usage":{"input_tokens":999,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":1049}}}}

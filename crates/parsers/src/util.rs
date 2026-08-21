@@ -9,7 +9,10 @@ pub fn expand_home(value: &str, home: &Path) -> PathBuf {
     let trimmed = value.trim().trim_end_matches(['/', '\\']);
     if trimmed == "~" {
         home.to_path_buf()
-    } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+    } else if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
         home.join(rest)
     } else {
         PathBuf::from(trimmed)
@@ -70,7 +73,12 @@ pub fn to_count(v: &Value) -> i64 {
             .or_else(|| n.as_f64().map(|f| f.round() as i64))
             .unwrap_or(0)
             .max(0),
-        Value::String(s) => s.parse::<f64>().ok().map(|f| f.round() as i64).unwrap_or(0).max(0),
+        Value::String(s) => s
+            .parse::<f64>()
+            .ok()
+            .map(|f| f.round() as i64)
+            .unwrap_or(0)
+            .max(0),
         _ => 0,
     }
 }
@@ -157,7 +165,12 @@ pub fn entries_to_buckets(entries: &[UsageEntry]) -> Vec<UsageBucket> {
     map.into_values().map(|b| b.normalize()).collect()
 }
 
-pub fn read_jsonl_limited(path: &Path, max_bytes: Option<u64>, start: u64, on_obj: &mut dyn FnMut(Value)) {
+pub fn read_jsonl_limited(
+    path: &Path,
+    max_bytes: Option<u64>,
+    start: u64,
+    on_obj: &mut dyn FnMut(Value),
+) {
     use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
     let file = match std::fs::File::open(path) {
         Ok(f) => f,

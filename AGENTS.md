@@ -14,7 +14,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 | 自身文件 | XDG；`--config` / `--data-dir` 可改 |
 | 解析器 | Claude Code、Codex、Grok |
 
-架构：[docs/design/architecture.md](docs/design/architecture.md)。需求原文：`goal.md`。冲突以代码与架构文档为准。
+架构：[docs/design/architecture.md](docs/design/architecture.md)。解析边界：[docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。需求原文：`goal.md`。冲突以代码与 `docs/design/` 为准。
 
 ## 目录结构
 
@@ -26,7 +26,7 @@ crates/dash/       ai-usage-dash（嵌入 UI 与价目快照）
 web/               Vue SPA
 fixtures/home/     解析器测试用伪造 $HOME
 deploy/            systemd 与 Dockerfile.dash
-docs/design/       系统架构
+docs/design/       系统架构与解析边界
 scripts/           价目快照脚本
 tmp/               本地产物，不入库
 ```
@@ -47,6 +47,7 @@ tmp/               本地产物，不入库
 | 主题 | 位置 |
 | --- | --- |
 | 架构、约束、范围 | [docs/design/architecture.md](docs/design/architecture.md) |
+| 解析计入边界 | [docs/design/parser-boundaries.md](docs/design/parser-boundaries.md) |
 | 使用与部署 | [README.md](README.md) |
 | ingest 契约 | `crates/protocol` |
 | 文档治理 | [docs-rules.md](docs-rules.md) |

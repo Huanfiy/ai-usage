@@ -1,7 +1,7 @@
 //! Ingest protocol: the only coupling between agent and dash.
 //!
-//! Cache read and cache write stay in separate fields. Merging them would make
-//! cost estimates unrecoverable (Anthropic cache write is 12.5× cache read).
+//! `cache_read` and `cache_creation` stay in separate fields. Merging them would
+//! make cost estimates unrecoverable (Anthropic `cache_creation` is 12.5× `cache_read`).
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};

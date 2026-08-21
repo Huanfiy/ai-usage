@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use ai_usage_parsers::{parse_all, ClaudeCodeAdapter, CodexAdapter, GrokAdapter, ParseCtx, UsageAdapter};
+use ai_usage_parsers::{
+    parse_all, ClaudeCodeAdapter, CodexAdapter, GrokAdapter, ParseCtx, UsageAdapter,
+};
+use ai_usage_protocol::session_hash_from_id;
 
 fn fixture_home() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -50,6 +53,26 @@ fn codex_skips_duplicate_token_count() {
     assert_eq!(b.output_tokens, 30);
     assert_eq!(b.reasoning_output_tokens, 15);
     assert_eq!(b.cache_creation_input_tokens, 0);
+}
+
+#[test]
+fn codex_replay_files_omit_usage_keep_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = fixture_ctx(&tmp);
+    let result = CodexAdapter.parse(&ctx);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.buckets.len(), 1);
+    let b = &result.buckets[0];
+    assert_eq!(b.input_tokens, 80);
+    assert_eq!(b.output_tokens, 30);
+    let hashes: Vec<_> = result
+        .sessions
+        .iter()
+        .map(|s| s.session_hash.as_str())
+        .collect();
+    assert!(hashes.contains(&session_hash_from_id("sess-codex-1").as_str()));
+    assert!(hashes.contains(&session_hash_from_id("sess-codex-fork").as_str()));
+    assert!(hashes.contains(&session_hash_from_id("sess-codex-sub").as_str()));
 }
 
 #[test]

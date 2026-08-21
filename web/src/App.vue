@@ -205,7 +205,7 @@ async function createHostToken() {
       <div class="kpi">
         <div class="label">缓存命中</div>
         <div class="value">{{ fmtPct(summary.cache_hit_rate) }}</div>
-        <div class="hint">读 {{ fmtTokens(summary.tokens.cache_read) }} · 写 {{ fmtTokens(summary.tokens.cache_creation) }}</div>
+        <div class="hint">cache_read {{ fmtTokens(summary.tokens.cache_read) }} · cache_creation {{ fmtTokens(summary.tokens.cache_creation) }}</div>
       </div>
       <div class="kpi">
         <div class="label">会话</div>

@@ -161,7 +161,10 @@ fn collect_candidates(
         let meta = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(err) => {
-                warnings.push(format!("Claude Code: cannot stat {}: {err}", path.display()));
+                warnings.push(format!(
+                    "Claude Code: cannot stat {}: {err}",
+                    path.display()
+                ));
                 continue;
             }
         };
@@ -181,13 +184,16 @@ fn collect_candidates(
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        groups.entry(session_id.clone()).or_default().push(Candidate {
-            path,
-            session_id,
-            size: meta.len(),
-            mtime_ms,
-            fallback_project: fallback,
-        });
+        groups
+            .entry(session_id.clone())
+            .or_default()
+            .push(Candidate {
+                path,
+                session_id,
+                size: meta.len(),
+                mtime_ms,
+                fallback_project: fallback,
+            });
     }
 }
 
@@ -198,7 +204,11 @@ fn project_from_relative(file: &Path, projects_dir: &Path) -> String {
         return "unknown".into();
     };
     let s = seg.to_string_lossy();
-    s.rsplit('-').next().filter(|p| !p.is_empty()).unwrap_or("unknown").to_string()
+    s.rsplit('-')
+        .next()
+        .filter(|p| !p.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn scan_best(
@@ -210,13 +220,20 @@ fn scan_best(
     for cand in cands {
         match scan_candidate(cand, with_usage, cache_dir) {
             Ok(parsed) => return Some(parsed),
-            Err(err) => warnings.push(format!("Claude Code: cannot read {}: {err}", cand.path.display())),
+            Err(err) => warnings.push(format!(
+                "Claude Code: cannot read {}: {err}",
+                cand.path.display()
+            )),
         }
     }
     None
 }
 
-fn scan_candidate(cand: &Candidate, with_usage: bool, cache_dir: &Path) -> Result<ParsedFile, String> {
+fn scan_candidate(
+    cand: &Candidate,
+    with_usage: bool,
+    cache_dir: &Path,
+) -> Result<ParsedFile, String> {
     let sig = file_sig(&cand.path).ok_or_else(|| "missing file".to_string())?;
     let cache_file = cache::cache_path(cache_dir, "claude", &cand.path);
     if let Some(hit) = cache::load::<FileCache>(&cache_file) {
@@ -233,7 +250,11 @@ fn scan_candidate(cand: &Candidate, with_usage: bool, cache_dir: &Path) -> Resul
     let mut last_model: Option<String> = None;
     let mut entries = Vec::new();
     let mut events = Vec::new();
-    let end = if cand.size == 0 { None } else { Some(cand.size) };
+    let end = if cand.size == 0 {
+        None
+    } else {
+        Some(cand.size)
+    };
     crate::util::read_jsonl_limited(&cand.path, end, 0, &mut |obj| {
         if !found_cwd {
             if let Some(cwd) = obj.get("cwd").and_then(|v| v.as_str()) {
@@ -314,7 +335,10 @@ fn scan_candidate(cand: &Candidate, with_usage: bool, cache_dir: &Path) -> Resul
 
 fn cache_creation_tokens(usage: &serde_json::Value) -> i64 {
     let direct = to_count_opt(usage.get("cache_creation_input_tokens"));
-    let breakdown = usage.get("cache_creation").cloned().unwrap_or(serde_json::Value::Null);
+    let breakdown = usage
+        .get("cache_creation")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let split = to_count_opt(breakdown.get("ephemeral_5m_input_tokens"))
         + to_count_opt(breakdown.get("ephemeral_1h_input_tokens"));
     direct.max(split)

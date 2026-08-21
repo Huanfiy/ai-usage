@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::agg::extract_sessions;
 use crate::cache;
 use crate::util::{
-    entries_to_buckets, expand_home, file_sig, parse_ts, project_from_encoded_dir, project_from_path,
-    read_json_value, to_count_opt, FileSig, TimingEvent, UsageEntry,
+    entries_to_buckets, expand_home, file_sig, parse_ts, project_from_encoded_dir,
+    project_from_path, read_json_value, to_count_opt, FileSig, TimingEvent, UsageEntry,
 };
 
 const SOURCE: &str = ai_usage_protocol::SOURCE_GROK;
@@ -119,7 +119,9 @@ fn parse_session(
 ) -> Result<(Vec<UsageEntry>, Vec<TimingEvent>), String> {
     let updates = session.path.join("updates.jsonl");
     let summary_path = session.path.join("summary.json");
-    let sig = file_sig(&updates).or_else(|| file_sig(&summary_path)).ok_or_else(|| "missing files".to_string())?;
+    let sig = file_sig(&updates)
+        .or_else(|| file_sig(&summary_path))
+        .ok_or_else(|| "missing files".to_string())?;
     let cache_file = cache::cache_path(cache_dir, "grok", &session.path);
     if let Some(hit) = cache::load::<FileCache>(&cache_file) {
         if cache::sig_unchanged(&hit.sig, &sig) {
@@ -147,8 +149,13 @@ fn parse_session(
     if updates.is_file() {
         let size = std::fs::metadata(&updates).map(|m| m.len()).unwrap_or(0);
         crate::util::read_jsonl_limited(&updates, Some(size).filter(|s| *s > 0), 0, &mut |obj| {
-            let Some(update) = obj.pointer("/params/update") else { return };
-            let kind = update.get("sessionUpdate").and_then(|v| v.as_str()).unwrap_or("");
+            let Some(update) = obj.pointer("/params/update") else {
+                return;
+            };
+            let kind = update
+                .get("sessionUpdate")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let ts = obj.get("timestamp").and_then(parse_ts);
             if kind == "turn_completed" {
                 if let Some(ts) = ts {
@@ -187,29 +194,39 @@ fn parse_session(
     if !saw_msg {
         let events_path = session.path.join("events.jsonl");
         if events_path.is_file() {
-            let size = std::fs::metadata(&events_path).map(|m| m.len()).unwrap_or(0);
-            crate::util::read_jsonl_limited(&events_path, Some(size).filter(|s| *s > 0), 0, &mut |obj| {
-                let ts = obj.get("ts").and_then(parse_ts).or_else(|| obj.get("timestamp").and_then(parse_ts));
-                let Some(ts) = ts else { return };
-                let ty = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if ty == "turn_started" {
-                    events.push(TimingEvent {
-                        session_id: session.id.clone(),
-                        source: SOURCE.into(),
-                        project: project.clone(),
-                        timestamp: ts,
-                        role: "user".into(),
-                    });
-                } else if ty == "turn_ended" || ty == "first_token" {
-                    events.push(TimingEvent {
-                        session_id: session.id.clone(),
-                        source: SOURCE.into(),
-                        project: project.clone(),
-                        timestamp: ts,
-                        role: "assistant".into(),
-                    });
-                }
-            });
+            let size = std::fs::metadata(&events_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            crate::util::read_jsonl_limited(
+                &events_path,
+                Some(size).filter(|s| *s > 0),
+                0,
+                &mut |obj| {
+                    let ts = obj
+                        .get("ts")
+                        .and_then(parse_ts)
+                        .or_else(|| obj.get("timestamp").and_then(parse_ts));
+                    let Some(ts) = ts else { return };
+                    let ty = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if ty == "turn_started" {
+                        events.push(TimingEvent {
+                            session_id: session.id.clone(),
+                            source: SOURCE.into(),
+                            project: project.clone(),
+                            timestamp: ts,
+                            role: "user".into(),
+                        });
+                    } else if ty == "turn_ended" || ty == "first_token" {
+                        events.push(TimingEvent {
+                            session_id: session.id.clone(),
+                            source: SOURCE.into(),
+                            project: project.clone(),
+                            timestamp: ts,
+                            role: "assistant".into(),
+                        });
+                    }
+                },
+            );
         }
     }
 
@@ -268,7 +285,13 @@ fn emit_turn_usage(
     push_usage(entries, fallback_model, project, ts, usage);
 }
 
-fn push_usage(entries: &mut Vec<UsageEntry>, model: &str, project: &str, ts: chrono::DateTime<chrono::Utc>, usage: &Value) {
+fn push_usage(
+    entries: &mut Vec<UsageEntry>,
+    model: &str,
+    project: &str,
+    ts: chrono::DateTime<chrono::Utc>,
+    usage: &Value,
+) {
     let total_input = to_count_opt(usage.get("inputTokens"));
     let cached = to_count_opt(usage.get("cachedReadTokens"));
     let output = to_count_opt(usage.get("outputTokens"));
