@@ -17,10 +17,34 @@ export type Summary = {
   sessions: number
   hosts: number
   sources: number
+  message_count: number
+  user_message_count: number
+  duration_seconds: number
+  active_seconds: number
 }
 
-export type SeriesPoint = { t: string; tokens: number; cost_usd: number }
+export type SeriesPoint = {
+  t: string
+  tokens: number
+  cost_usd: number
+  input: number
+  output: number
+  cache_read: number
+  cache_creation: number
+}
+
 export type BreakdownItem = { key: string; tokens: number; cost_usd: number; share: number }
+
+export type Distributions = {
+  host: BreakdownItem[]
+  source: BreakdownItem[]
+  model: BreakdownItem[]
+  project: BreakdownItem[]
+}
+
+export type ActivityCell = { dow: number; hour: number; tokens: number; cost_usd: number }
+export type Activity = { cells: ActivityCell[] }
+
 export type HostRow = { host_id: string; hostname: string; last_seen: string; agent_version?: string | null }
 export type SessionRow = {
   host_id: string
@@ -57,7 +81,9 @@ function qs(q: Query & Record<string, string | number | boolean | undefined>): s
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path)
+  const ct = r.headers.get('content-type') || ''
   if (!r.ok) throw new Error(`${path} ${r.status}`)
+  if (!ct.includes('json')) throw new Error(`${path} ${r.status} 响应不是 JSON`)
   return r.json() as Promise<T>
 }
 
@@ -66,6 +92,8 @@ export const api = {
   summary: (q: Query) => get<Summary>('/v1/summary' + qs(q)),
   series: (q: Query) => get<{ points: SeriesPoint[] }>('/v1/series' + qs(q)),
   breakdown: (q: Query, by: string) => get<{ items: BreakdownItem[] }>('/v1/breakdown' + qs({ ...q, by })),
+  distributions: (q: Query) => get<Distributions>('/v1/distributions' + qs(q)),
+  activity: (q: Query) => get<Activity>('/v1/activity' + qs(q)),
   sessions: (q: Query) => get<{ items: SessionRow[] }>('/v1/sessions' + qs({ ...q, limit: 80 })),
   hosts: () => get<{ items: HostRow[] }>('/v1/hosts'),
   filters: (q: Query) => get<{ sources: string[]; models: string[]; projects: string[] }>('/v1/filters' + qs(q)),

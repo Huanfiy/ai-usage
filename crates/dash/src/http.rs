@@ -38,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/summary", get(summary))
         .route("/v1/series", get(series))
         .route("/v1/breakdown", get(breakdown))
+        .route("/v1/distributions", get(distributions))
+        .route("/v1/activity", get(activity))
         .route("/v1/sessions", get(sessions))
         .route("/v1/hosts", get(hosts))
         .route("/v1/filters", get(filters))
@@ -62,16 +64,20 @@ async fn ingest(
 ) -> Result<Json<Value>, ApiError> {
     let token = bearer(&headers).ok_or(ApiError::Unauthorized)?;
     let token_hash = hash_token(token);
-    let host_id = st.db.with(|c| {
-        let row = db::lookup_token(c, &token_hash)?;
-        match row {
-            Some(r) if !r.revoked => Ok(r.host_id),
-            _ => anyhow::bail!("unauthorized"),
-        }
-    }).map_err(|_| ApiError::Unauthorized)?;
+    let host_id = st
+        .db
+        .with(|c| {
+            let row = db::lookup_token(c, &token_hash)?;
+            match row {
+                Some(r) if !r.revoked => Ok(r.host_id),
+                _ => anyhow::bail!("unauthorized"),
+            }
+        })
+        .map_err(|_| ApiError::Unauthorized)?;
 
     let raw = decode_body(&headers, &body).map_err(|e| ApiError::Bad(e))?;
-    let req: IngestRequest = serde_json::from_slice(&raw).map_err(|e| ApiError::Bad(e.to_string()))?;
+    let req: IngestRequest =
+        serde_json::from_slice(&raw).map_err(|e| ApiError::Bad(e.to_string()))?;
     let hostname = req
         .hostname
         .clone()
@@ -156,6 +162,36 @@ async fn breakdown(
     Ok(Json(json!({ "items": out })))
 }
 
+async fn distributions(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CommonQuery>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let f = filter_from(&st, &q);
+    let book = st.pricing.read().unwrap();
+    let out = st
+        .db
+        .with(|c| query::distributions(c, &book, &f))
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::to_value(out).unwrap()))
+}
+
+async fn activity(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CommonQuery>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let f = filter_from(&st, &q);
+    let book = st.pricing.read().unwrap();
+    let out = st
+        .db
+        .with(|c| query::activity(c, &book, &f))
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::to_value(out).unwrap()))
+}
+
 async fn sessions(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -171,10 +207,7 @@ async fn sessions(
     Ok(Json(json!({ "items": out })))
 }
 
-async fn hosts(
-    State(st): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
+async fn hosts(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     require_ui(&st, &headers)?;
     let out = st.db.with(query::hosts).map_err(ApiError::internal)?;
     Ok(Json(json!({ "items": out })))
@@ -261,6 +294,14 @@ async fn revoke_token(
 }
 
 async fn static_handler(uri: Uri) -> Response {
+    if uri.path().starts_with("/v1/") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "application/json")],
+            json!({"error": "not found"}).to_string(),
+        )
+            .into_response();
+    }
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     if let Some(file) = Assets::get(path) {
@@ -346,8 +387,14 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, Json(json!({"error":"unauthorized"}))).into_response(),
-            Self::Bad(msg) => (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response(),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"unauthorized"})),
+            )
+                .into_response(),
+            Self::Bad(msg) => {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response()
+            }
             Self::Internal(msg) => {
                 tracing::error!("{msg}");
                 (
@@ -357,5 +404,83 @@ impl IntoResponse for ApiError {
                     .into_response()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DashConfig;
+    use crate::pricing::PriceBook;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn app() -> (Router, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        let book = PriceBook::load(dir.path(), None).unwrap();
+        let state = AppState {
+            db: Arc::new(db),
+            pricing: Arc::new(RwLock::new(book)),
+            config: DashConfig::default(),
+        };
+        (router(state), dir)
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
+        let res = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn unknown_v1_is_json_404() {
+        let (app, _dir) = app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn distributions_route_shape() {
+        let (app, _dir) = app();
+        let (status, body) = get_json(app, "/v1/distributions").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["host"].is_array());
+        assert!(body["source"].is_array());
+        assert!(body["model"].is_array());
+        assert!(body["project"].is_array());
+    }
+
+    #[tokio::test]
+    async fn activity_route_has_168_cells() {
+        let (app, _dir) = app();
+        let (status, body) = get_json(app, "/v1/activity").await;
+        assert_eq!(status, StatusCode::OK);
+        let cells = body["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 168);
+        assert_eq!(cells[0]["dow"], 0);
+        assert_eq!(cells[0]["hour"], 0);
+        assert_eq!(cells[167]["dow"], 6);
+        assert_eq!(cells[167]["hour"], 23);
+        assert_eq!(cells[0]["tokens"], 0);
+        assert!(cells[0]["cost_usd"].is_number());
     }
 }

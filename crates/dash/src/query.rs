@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
@@ -89,7 +89,11 @@ struct TokenRow {
 }
 
 fn scan_rows(conn: &Connection, f: &QueryFilter) -> Result<Vec<TokenRow>> {
-    let (table, time_col) = if f.use_rollups() {
+    scan_table(conn, f, f.use_rollups())
+}
+
+fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<Vec<TokenRow>> {
+    let (table, time_col) = if use_rollups {
         ("daily_rollups", "day")
     } else {
         ("usage_buckets", "bucket_start")
@@ -101,12 +105,12 @@ fn scan_rows(conn: &Connection, f: &QueryFilter) -> Result<Vec<TokenRow>> {
          FROM {table} WHERE {time_col} >= ? AND {time_col} < ?"
     );
     let mut params: Vec<String> = vec![
-        if f.use_rollups() {
+        if use_rollups {
             f.from.date_naive().to_string()
         } else {
             f.from.to_rfc3339()
         },
-        if f.use_rollups() {
+        if use_rollups {
             f.to.date_naive().to_string()
         } else {
             f.to.to_rfc3339()
@@ -146,6 +150,16 @@ fn scan_rows(conn: &Connection, f: &QueryFilter) -> Result<Vec<TokenRow>> {
     Ok(rows)
 }
 
+fn token_slice(r: &TokenRow) -> TokenSlice {
+    TokenSlice {
+        input: r.input,
+        output: r.output,
+        cache_read: r.cache_read,
+        cache_write: r.cache_write,
+        reasoning: r.reasoning,
+    }
+}
+
 fn push_in(sql: &mut String, params: &mut Vec<String>, col: &str, values: &[String]) {
     if values.is_empty() {
         return;
@@ -172,6 +186,10 @@ pub struct Summary {
     pub cost_coverage: f64,
     pub cache_hit_rate: f64,
     pub sessions: i64,
+    pub message_count: i64,
+    pub user_message_count: i64,
+    pub duration_seconds: i64,
+    pub active_seconds: i64,
     pub hosts: i64,
     pub sources: i64,
 }
@@ -187,14 +205,7 @@ pub fn summary(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<S
         tokens.add_row(r);
         hosts.insert(r.host_id.clone());
         sources.insert(r.source.clone());
-        let slice = TokenSlice {
-            input: r.input,
-            output: r.output,
-            cache_read: r.cache_read,
-            cache_write: r.cache_write,
-            reasoning: r.reasoning,
-        };
-        if let Some(c) = book.cost_usd(&r.model, slice) {
+        if let Some(c) = book.cost_usd(&r.model, token_slice(r)) {
             cost += c;
             priced += r.total;
         }
@@ -205,7 +216,7 @@ pub fn summary(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<S
     } else {
         0.0
     };
-    let sessions = count_sessions(conn, f)?;
+    let sess = session_totals(conn, f)?;
     Ok(Summary {
         from: f.from.to_rfc3339(),
         to: f.to.to_rfc3339(),
@@ -217,15 +228,29 @@ pub fn summary(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<S
         tokens,
         cost_usd: cost,
         cache_hit_rate,
-        sessions,
+        sessions: sess.sessions,
+        message_count: sess.message_count,
+        user_message_count: sess.user_message_count,
+        duration_seconds: sess.duration_seconds,
+        active_seconds: sess.active_seconds,
         hosts: hosts.len() as i64,
         sources: sources.len() as i64,
     })
 }
 
-fn count_sessions(conn: &Connection, f: &QueryFilter) -> Result<i64> {
+struct SessionTotals {
+    sessions: i64,
+    message_count: i64,
+    user_message_count: i64,
+    duration_seconds: i64,
+    active_seconds: i64,
+}
+
+fn session_totals(conn: &Connection, f: &QueryFilter) -> Result<SessionTotals> {
     let mut sql = String::from(
-        "SELECT COUNT(*) FROM usage_sessions WHERE last_message_at >= ? AND last_message_at < ?",
+        "SELECT COUNT(*), COALESCE(SUM(message_count),0), COALESCE(SUM(user_message_count),0),
+                COALESCE(SUM(duration_seconds),0), COALESCE(SUM(active_seconds),0)
+         FROM usage_sessions WHERE last_message_at >= ? AND last_message_at < ?",
     );
     let mut params = vec![f.from.to_rfc3339(), f.to.to_rfc3339()];
     if let Some(host) = &f.host_id {
@@ -236,38 +261,54 @@ fn count_sessions(conn: &Connection, f: &QueryFilter) -> Result<i64> {
     if !f.hide_projects {
         push_in(&mut sql, &mut params, "project", &f.projects);
     }
-    let n: i64 = conn.query_row(&sql, params_from_iter(params.iter()), |r| r.get(0))?;
-    Ok(n)
+    let row = conn.query_row(&sql, params_from_iter(params.iter()), |r| {
+        Ok(SessionTotals {
+            sessions: r.get(0)?,
+            message_count: r.get(1)?,
+            user_message_count: r.get(2)?,
+            duration_seconds: r.get(3)?,
+            active_seconds: r.get(4)?,
+        })
+    })?;
+    Ok(row)
 }
 
 #[derive(Serialize)]
 pub struct SeriesPoint {
     pub t: String,
     pub tokens: i64,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_creation: i64,
     pub cost_usd: f64,
 }
 
 pub fn series(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Vec<SeriesPoint>> {
     let rows = scan_rows(conn, f)?;
-    let mut map: std::collections::BTreeMap<String, (i64, f64)> = std::collections::BTreeMap::new();
+    let mut map: std::collections::BTreeMap<String, SeriesPoint> =
+        std::collections::BTreeMap::new();
     for r in rows {
-        let key = r.bucket_start.clone();
-        let slice = TokenSlice {
-            input: r.input,
-            output: r.output,
-            cache_read: r.cache_read,
-            cache_write: r.cache_write,
-            reasoning: r.reasoning,
-        };
-        let cost = book.cost_usd(&r.model, slice).unwrap_or(0.0);
-        let e = map.entry(key).or_insert((0, 0.0));
-        e.0 += r.total;
-        e.1 += cost;
+        let cost = book.cost_usd(&r.model, token_slice(&r)).unwrap_or(0.0);
+        let e = map
+            .entry(r.bucket_start.clone())
+            .or_insert_with(|| SeriesPoint {
+                t: r.bucket_start.clone(),
+                tokens: 0,
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_creation: 0,
+                cost_usd: 0.0,
+            });
+        e.tokens += r.total;
+        e.input += r.input;
+        e.output += r.output;
+        e.cache_read += r.cache_read;
+        e.cache_creation += r.cache_write;
+        e.cost_usd += cost;
     }
-    Ok(map
-        .into_iter()
-        .map(|(t, (tokens, cost_usd))| SeriesPoint { t, tokens, cost_usd })
-        .collect())
+    Ok(map.into_values().collect())
 }
 
 #[derive(Serialize)]
@@ -285,24 +326,24 @@ pub fn breakdown(
     by: &str,
 ) -> Result<Vec<BreakdownItem>> {
     let rows = scan_rows(conn, f)?;
+    Ok(group_items(&rows, book, |r| match by {
+        "model" => r.model.clone(),
+        "project" => r.project.clone(),
+        "host" => r.host_id.clone(),
+        _ => r.source.clone(),
+    }))
+}
+
+fn group_items(
+    rows: &[TokenRow],
+    book: &PriceBook,
+    key_of: impl Fn(&TokenRow) -> String,
+) -> Vec<BreakdownItem> {
     let mut map: std::collections::BTreeMap<String, (i64, f64)> = std::collections::BTreeMap::new();
     let mut total = 0i64;
     for r in rows {
-        let key = match by {
-            "model" => r.model.clone(),
-            "project" => r.project.clone(),
-            "host" => r.host_id.clone(),
-            _ => r.source.clone(),
-        };
-        let slice = TokenSlice {
-            input: r.input,
-            output: r.output,
-            cache_read: r.cache_read,
-            cache_write: r.cache_write,
-            reasoning: r.reasoning,
-        };
-        let cost = book.cost_usd(&r.model, slice).unwrap_or(0.0);
-        let e = map.entry(key).or_insert((0, 0.0));
+        let cost = book.cost_usd(&r.model, token_slice(r)).unwrap_or(0.0);
+        let e = map.entry(key_of(r)).or_insert((0, 0.0));
         e.0 += r.total;
         e.1 += cost;
         total += r.total;
@@ -321,7 +362,69 @@ pub fn breakdown(
         })
         .collect();
     items.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-    Ok(items)
+    items
+}
+
+#[derive(Serialize)]
+pub struct Distributions {
+    pub host: Vec<BreakdownItem>,
+    pub source: Vec<BreakdownItem>,
+    pub model: Vec<BreakdownItem>,
+    pub project: Vec<BreakdownItem>,
+}
+
+pub fn distributions(
+    conn: &Connection,
+    book: &PriceBook,
+    f: &QueryFilter,
+) -> Result<Distributions> {
+    let rows = scan_rows(conn, f)?;
+    Ok(Distributions {
+        host: group_items(&rows, book, |r| r.host_id.clone()),
+        source: group_items(&rows, book, |r| r.source.clone()),
+        model: group_items(&rows, book, |r| r.model.clone()),
+        project: group_items(&rows, book, |r| r.project.clone()),
+    })
+}
+
+#[derive(Serialize)]
+pub struct ActivityCell {
+    pub dow: u8,
+    pub hour: u8,
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
+#[derive(Serialize)]
+pub struct Activity {
+    pub cells: Vec<ActivityCell>,
+}
+
+pub fn activity(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Activity> {
+    let rows = scan_table(conn, f, false)?;
+    let mut cells = vec![(0i64, 0.0f64); 168];
+    for r in rows {
+        let Ok(dt) = DateTime::parse_from_rfc3339(&r.bucket_start) else {
+            continue;
+        };
+        let utc = dt.with_timezone(&Utc);
+        let dow = utc.weekday().num_days_from_sunday() as u8;
+        let hour = utc.hour() as u8;
+        let idx = (dow as usize) * 24 + (hour as usize);
+        let cost = book.cost_usd(&r.model, token_slice(&r)).unwrap_or(0.0);
+        cells[idx].0 += r.total;
+        cells[idx].1 += cost;
+    }
+    Ok(Activity {
+        cells: (0..168)
+            .map(|i| ActivityCell {
+                dow: (i / 24) as u8,
+                hour: (i % 24) as u8,
+                tokens: cells[i].0,
+                cost_usd: cells[i].1,
+            })
+            .collect(),
+    })
 }
 
 #[derive(Serialize)]
@@ -389,8 +492,9 @@ pub struct HostRow {
 }
 
 pub fn hosts(conn: &Connection) -> Result<Vec<HostRow>> {
-    let mut stmt =
-        conn.prepare("SELECT host_id, hostname, last_seen, agent_version FROM hosts ORDER BY last_seen DESC")?;
+    let mut stmt = conn.prepare(
+        "SELECT host_id, hostname, last_seen, agent_version FROM hosts ORDER BY last_seen DESC",
+    )?;
     let rows = stmt
         .query_map([], |r| {
             Ok(HostRow {
@@ -428,4 +532,218 @@ pub fn filter_options(conn: &Connection, f: &QueryFilter) -> Result<FilterOption
         models: models.into_iter().collect(),
         projects: projects.into_iter().collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    use ai_usage_protocol::{round_to_half_hour, IngestRequest, UsageBucket, UsageSession};
+    use chrono::TimeZone;
+
+    use crate::db::Db;
+    use crate::ingest::ingest;
+
+    fn book() -> PriceBook {
+        PriceBook::load(Path::new("/tmp/does-not-exist-ai-usage"), None).unwrap()
+    }
+
+    fn window() -> QueryFilter {
+        QueryFilter::from_params(
+            Some(Utc.with_ymd_and_hms(2026, 1, 14, 0, 0, 0).unwrap()),
+            Some(Utc.with_ymd_and_hms(2026, 1, 16, 0, 0, 0).unwrap()),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+    }
+
+    fn sample_bucket(
+        hour: u32,
+        input: i64,
+        output: i64,
+        cache_read: i64,
+        cache_write: i64,
+    ) -> UsageBucket {
+        let ts = Utc.with_ymd_and_hms(2026, 1, 15, hour, 17, 0).unwrap();
+        UsageBucket {
+            source: "codex".into(),
+            model: "gpt-5.4".into(),
+            project: "demo".into(),
+            bucket_start: round_to_half_hour(ts),
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_write,
+            reasoning_output_tokens: 0,
+            total_tokens: input + output + cache_read + cache_write,
+        }
+    }
+
+    fn sample_session(
+        hash: &str,
+        messages: i64,
+        user: i64,
+        duration: i64,
+        active: i64,
+    ) -> UsageSession {
+        let at = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        UsageSession {
+            source: "codex".into(),
+            project: "demo".into(),
+            session_hash: hash.into(),
+            first_message_at: at,
+            last_message_at: at,
+            duration_seconds: duration,
+            active_seconds: active,
+            message_count: messages,
+            user_message_count: user,
+        }
+    }
+
+    fn seed(c: &Connection, buckets: Vec<UsageBucket>, sessions: Vec<UsageSession>) {
+        let req = IngestRequest {
+            schema_version: 1,
+            hostname: Some("a".into()),
+            agent_version: Some("0.1.0".into()),
+            buckets,
+            sessions,
+        };
+        ingest(c, "host1", "a", Some("0.1.0"), req).unwrap();
+    }
+
+    #[test]
+    fn summary_sums_session_messages_and_duration() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![],
+                vec![
+                    sample_session("s1", 10, 3, 100, 40),
+                    sample_session("s2", 5, 2, 50, 20),
+                    {
+                        let mut outside = sample_session("s3", 99, 99, 999, 999);
+                        outside.last_message_at =
+                            Utc.with_ymd_and_hms(2026, 1, 10, 0, 0, 0).unwrap();
+                        outside
+                    },
+                ],
+            );
+            let s = summary(c, &book(), &window())?;
+            assert_eq!(s.sessions, 2);
+            assert_eq!(s.message_count, 15);
+            assert_eq!(s.user_message_count, 5);
+            assert_eq!(s.duration_seconds, 150);
+            assert_eq!(s.active_seconds, 60);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn summary_session_totals_ignore_model_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(c, vec![], vec![sample_session("s1", 10, 3, 100, 40)]);
+            let mut f = window();
+            f.models = vec!["does-not-exist".into()];
+            let s = summary(c, &book(), &f)?;
+            assert_eq!(s.sessions, 1);
+            assert_eq!(s.message_count, 10);
+            assert_eq!(s.user_message_count, 3);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn series_points_include_token_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(c, vec![sample_bucket(10, 100, 20, 30, 10)], vec![]);
+            let points = series(c, &book(), &window())?;
+            assert_eq!(points.len(), 1);
+            let p = &points[0];
+            assert_eq!(p.input, 100);
+            assert_eq!(p.output, 20);
+            assert_eq!(p.cache_read, 30);
+            assert_eq!(p.cache_creation, 10);
+            assert_eq!(p.tokens, 160);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn activity_splits_cross_hour_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![
+                    sample_bucket(10, 40, 0, 0, 0),
+                    sample_bucket(22, 25, 0, 0, 0),
+                ],
+                vec![],
+            );
+            let wide = QueryFilter::from_params(
+                Some(Utc.with_ymd_and_hms(2026, 1, 10, 0, 0, 0).unwrap()),
+                Some(Utc.with_ymd_and_hms(2026, 1, 20, 0, 0, 0).unwrap()),
+                None,
+                None,
+                None,
+                None,
+                false,
+            );
+            assert!(wide.use_rollups());
+            let act = activity(c, &book(), &wide)?;
+            assert_eq!(act.cells.len(), 168);
+            let t10 = Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap();
+            let t22 = Utc.with_ymd_and_hms(2026, 1, 15, 22, 0, 0).unwrap();
+            let cell = |t: DateTime<Utc>| -> (u8, u8) {
+                (t.weekday().num_days_from_sunday() as u8, t.hour() as u8)
+            };
+            let (d10, h10) = cell(t10);
+            let (d22, h22) = cell(t22);
+            assert_ne!((d10, h10), (d22, h22));
+            let find = |dow: u8, hour: u8| {
+                act.cells
+                    .iter()
+                    .find(|c| c.dow == dow && c.hour == hour)
+                    .unwrap()
+            };
+            assert_eq!(find(d10, h10).tokens, 40);
+            assert_eq!(find(d22, h22).tokens, 25);
+            assert_eq!(act.cells.iter().map(|c| c.tokens).sum::<i64>(), 65);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn distributions_group_four_dimensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(c, vec![sample_bucket(10, 100, 0, 0, 0)], vec![]);
+            let d = distributions(c, &book(), &window())?;
+            assert_eq!(d.host.len(), 1);
+            assert_eq!(d.host[0].key, "host1");
+            assert_eq!(d.host[0].tokens, 100);
+            assert_eq!(d.source[0].key, "codex");
+            assert_eq!(d.model[0].key, "gpt-5.4");
+            assert_eq!(d.project[0].key, "demo");
+            assert!((d.host[0].share - 1.0).abs() < f64::EPSILON);
+            Ok(())
+        })
+        .unwrap();
+    }
 }
