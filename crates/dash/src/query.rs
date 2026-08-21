@@ -42,6 +42,26 @@ impl QueryFilter {
     fn use_rollups(&self) -> bool {
         (self.to - self.from) > Duration::days(2)
     }
+
+    /// Half-open `[from, to)` as UTC calendar days for `daily_rollups`.
+    ///
+    /// A mid-day `to` must include that UTC date: `day < to.date` would drop
+    /// today when the UI 7D window ends at now.
+    fn rollup_day_bounds(&self) -> (String, String) {
+        (
+            self.from.date_naive().to_string(),
+            exclusive_rollup_end(self.to).to_string(),
+        )
+    }
+}
+
+fn exclusive_rollup_end(to: DateTime<Utc>) -> chrono::NaiveDate {
+    let d = to.date_naive();
+    if to.time() == chrono::NaiveTime::MIN {
+        d
+    } else {
+        d.succ_opt().unwrap_or(d)
+    }
 }
 
 fn split_csv(v: Option<String>) -> Vec<String> {
@@ -104,18 +124,12 @@ fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<V
                 reasoning_output_tokens, total_tokens
          FROM {table} WHERE {time_col} >= ? AND {time_col} < ?"
     );
-    let mut params: Vec<String> = vec![
-        if use_rollups {
-            f.from.date_naive().to_string()
-        } else {
-            f.from.to_rfc3339()
-        },
-        if use_rollups {
-            f.to.date_naive().to_string()
-        } else {
-            f.to.to_rfc3339()
-        },
-    ];
+    let mut params: Vec<String> = if use_rollups {
+        let (a, b) = f.rollup_day_bounds();
+        vec![a, b]
+    } else {
+        vec![f.from.to_rfc3339(), f.to.to_rfc3339()]
+    };
     if let Some(host) = &f.host_id {
         sql.push_str(" AND host_id = ?");
         params.push(host.clone());
@@ -547,6 +561,26 @@ mod tests {
 
     fn book() -> PriceBook {
         PriceBook::load(Path::new("/tmp/does-not-exist-ai-usage"), None).unwrap()
+    }
+
+    #[test]
+    fn rollup_window_ending_mid_day_includes_that_day() {
+        let midnight = Utc.with_ymd_and_hms(2026, 8, 21, 0, 0, 0).unwrap();
+        let mid = Utc.with_ymd_and_hms(2026, 8, 21, 9, 47, 0).unwrap();
+        let from = midnight - Duration::days(7);
+        let open = QueryFilter::from_params(
+            Some(from),
+            Some(midnight),
+            None,
+            None,
+            None,
+            None,
+            false,
+        );
+        let live = QueryFilter::from_params(Some(from), Some(mid), None, None, None, None, false);
+        assert!(open.use_rollups() && live.use_rollups());
+        assert_eq!(open.rollup_day_bounds().1, "2026-08-21");
+        assert_eq!(live.rollup_day_bounds().1, "2026-08-22");
     }
 
     fn window() -> QueryFilter {
