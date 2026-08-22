@@ -171,44 +171,21 @@ fn key_rank(key: &str) -> u8 {
     }
 }
 
-fn is_effort_token(part: &str) -> bool {
-    matches!(
-        part.to_ascii_lowercase().as_str(),
-        "xhigh" | "high" | "medium" | "low" | "max" | "thinking"
-    )
-}
-
-fn is_alias_token(part: &str) -> bool {
-    is_effort_token(part) || part.eq_ignore_ascii_case("build")
-}
-
-/// Drop effort / thinking, Cursor channel prefix, and Grok `-build` snapshot.
-/// Keep Fast vs standard and the family SKU (`gpt-5.6-sol`, `grok-4.6`).
-/// Agent still stores the raw slug.
-pub fn display_model(name: &str) -> String {
-    let trimmed = name.trim();
-    let body = trimmed
-        .get(7..)
-        .filter(|_| trimmed.len() >= 7 && trimmed[..7].eq_ignore_ascii_case("cursor-"))
-        .unwrap_or(trimmed);
-    let parts: Vec<&str> = body
-        .split('-')
-        .filter(|p| !p.is_empty() && !is_alias_token(p))
-        .collect();
-    if parts.is_empty() {
-        trimmed.to_string()
-    } else {
-        parts.join("-")
-    }
-}
-
 /// Cursor CSV slugs include effort (`xhigh`/`high`/…) before the speed tier.
-/// Pricing only distinguishes Fast vs standard, so drop effort tokens.
+/// Pricing only distinguishes Fast vs standard; do not reuse query display
+/// folding (that also strips `cursor-` / `thinking` / `max`).
 fn canonicalize_cursor_slug(n: &str) -> Option<String> {
     if !(n.starts_with("composer-") || n.starts_with("cursor-grok-")) {
         return None;
     }
-    Some(display_model(n))
+    let parts: Vec<&str> = n
+        .split('-')
+        .filter(|p| !matches!(*p, "xhigh" | "high" | "medium" | "low"))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("-"))
 }
 
 pub fn normalize_model(name: &str) -> String {
@@ -347,22 +324,5 @@ mod tests {
         assert!(cursor_fast.input > xai.input);
         let grok45_fast = book.lookup("cursor-grok-4.5-medium-fast").unwrap();
         assert_eq!(grok45_fast.output, 1.8e-5);
-    }
-
-    #[test]
-    fn display_model_drops_effort_keeps_fast() {
-        assert_eq!(display_model("cursor-grok-4.6-xhigh-fast"), "grok-4.6-fast");
-        assert_eq!(display_model("cursor-grok-4.6-high"), "grok-4.6");
-        assert_eq!(display_model("grok-4.6-build"), "grok-4.6");
-        assert_eq!(display_model("composer-2.5-medium"), "composer-2.5");
-        assert_eq!(display_model("composer-2.5-fast"), "composer-2.5-fast");
-        assert_eq!(display_model("gpt-5.6-sol-max"), "gpt-5.6-sol");
-        assert_eq!(display_model("gpt-5.6-sol-fast"), "gpt-5.6-sol-fast");
-        assert_eq!(
-            display_model("claude-fable-5-thinking-max"),
-            "claude-fable-5"
-        );
-        assert_eq!(display_model("claude-opus-5-thinking"), "claude-opus-5");
-        assert_eq!(display_model("claude-opus-5"), "claude-opus-5");
     }
 }

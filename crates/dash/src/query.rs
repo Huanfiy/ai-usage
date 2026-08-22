@@ -3,7 +3,8 @@ use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
-use crate::pricing::{display_model, PriceBook, TokenSlice};
+use crate::model::display_model;
+use crate::pricing::{PriceBook, TokenSlice};
 
 #[derive(Debug, Clone)]
 pub struct QueryFilter {
@@ -97,7 +98,9 @@ impl TokenTotals {
 struct TokenRow {
     host_id: String,
     source: String,
+    /// Folded display name for grouping and filters.
     model: String,
+    /// Raw ingested slug; pricing reads this only.
     billed_model: String,
     project: String,
     bucket_start: String,
@@ -142,11 +145,12 @@ fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<V
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt
         .query_map(params_from_iter(params.iter()), |r| {
+            let billed_model: String = r.get(2)?;
             Ok(TokenRow {
                 host_id: r.get(0)?,
                 source: r.get(1)?,
-                model: r.get(2)?,
-                billed_model: r.get(2)?,
+                model: display_model(&billed_model),
+                billed_model,
                 project: if f.hide_projects {
                     "unknown".into()
                 } else {
@@ -168,10 +172,7 @@ fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<V
             .iter()
             .map(|m| display_model(m).to_ascii_lowercase())
             .collect();
-        rows.retain(|r| wanted.contains(&display_model(&r.billed_model).to_ascii_lowercase()));
-    }
-    for r in &mut rows {
-        r.model = display_model(&r.billed_model);
+        rows.retain(|r| wanted.contains(&r.model.to_ascii_lowercase()));
     }
     Ok(rows)
 }
@@ -870,6 +871,32 @@ mod tests {
                 opts.models,
                 vec!["grok-4.6".to_string(), "grok-4.6-fast".into()]
             );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cost_follows_raw_slug_not_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![bucket_model("cursor-grok-4.6-xhigh-fast", 1_000_000)],
+                vec![],
+            );
+            let s = summary(c, &book(), &window())?;
+            let tokens = TokenSlice {
+                input: 1_000_000,
+                ..TokenSlice::default()
+            };
+            let fast = book()
+                .cost_usd("cursor-grok-4.6-xhigh-fast", tokens)
+                .unwrap();
+            let std = book().cost_usd("grok-4.6", tokens).unwrap();
+            assert!((s.cost_usd - fast).abs() < 1e-9);
+            assert!(fast > std);
             Ok(())
         })
         .unwrap();

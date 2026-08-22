@@ -2,6 +2,7 @@ mod config;
 mod db;
 mod http;
 mod ingest;
+mod model;
 mod paths;
 mod pricing;
 mod query;
