@@ -4,7 +4,7 @@ use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
 use crate::model::display_model;
-use crate::pricing::{PriceBook, TokenSlice};
+use crate::pricing::{ModelPrice, PriceBook, TokenSlice};
 
 #[derive(Debug, Clone)]
 pub struct QueryFilter {
@@ -346,6 +346,8 @@ pub struct BreakdownItem {
     pub tokens: i64,
     pub cost_usd: f64,
     pub share: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPrice>,
 }
 
 pub fn breakdown(
@@ -355,45 +357,85 @@ pub fn breakdown(
     by: &str,
 ) -> Result<Vec<BreakdownItem>> {
     let rows = scan_rows(conn, f)?;
-    Ok(group_items(&rows, book, |r| match by {
-        "model" => r.model.clone(),
-        "project" => r.project.clone(),
-        "host" => r.host_id.clone(),
-        _ => r.source.clone(),
-    }))
+    let by_model = by == "model";
+    Ok(group_items(
+        &rows,
+        book,
+        |r| match by {
+            "model" => r.model.clone(),
+            "project" => r.project.clone(),
+            "host" => r.host_id.clone(),
+            _ => r.source.clone(),
+        },
+        by_model,
+    ))
+}
+
+struct GroupAcc {
+    tokens: i64,
+    cost_usd: f64,
+    billed: Vec<String>,
 }
 
 fn group_items(
     rows: &[TokenRow],
     book: &PriceBook,
     key_of: impl Fn(&TokenRow) -> String,
+    attach_pricing: bool,
 ) -> Vec<BreakdownItem> {
-    let mut map: std::collections::BTreeMap<String, (i64, f64)> = std::collections::BTreeMap::new();
+    let mut map: std::collections::BTreeMap<String, GroupAcc> = std::collections::BTreeMap::new();
     let mut total = 0i64;
     for r in rows {
         let cost = book
             .cost_usd(&r.billed_model, token_slice(r))
             .unwrap_or(0.0);
-        let e = map.entry(key_of(r)).or_insert((0, 0.0));
-        e.0 += r.total;
-        e.1 += cost;
+        let e = map.entry(key_of(r)).or_insert(GroupAcc {
+            tokens: 0,
+            cost_usd: 0.0,
+            billed: Vec::new(),
+        });
+        e.tokens += r.total;
+        e.cost_usd += cost;
+        if attach_pricing && !e.billed.iter().any(|m| m == &r.billed_model) {
+            e.billed.push(r.billed_model.clone());
+        }
         total += r.total;
     }
     let mut items: Vec<_> = map
         .into_iter()
-        .map(|(key, (tokens, cost_usd))| BreakdownItem {
+        .map(|(key, acc)| BreakdownItem {
             key,
-            tokens,
-            cost_usd,
+            tokens: acc.tokens,
+            cost_usd: acc.cost_usd,
             share: if total > 0 {
-                tokens as f64 / total as f64
+                acc.tokens as f64 / total as f64
             } else {
                 0.0
+            },
+            pricing: if attach_pricing {
+                consensus_price(book, &acc.billed)
+            } else {
+                None
             },
         })
         .collect();
     items.sort_by(|a, b| b.tokens.cmp(&a.tokens));
     items
+}
+
+fn consensus_price(book: &PriceBook, billed: &[String]) -> Option<ModelPrice> {
+    let mut found: Option<ModelPrice> = None;
+    for m in billed {
+        let Some(p) = book.lookup(m) else {
+            continue;
+        };
+        match &found {
+            None => found = Some(p.clone()),
+            Some(prev) if prev == p => {}
+            Some(_) => return None,
+        }
+    }
+    found
 }
 
 #[derive(Serialize)]
@@ -411,10 +453,10 @@ pub fn distributions(
 ) -> Result<Distributions> {
     let rows = scan_rows(conn, f)?;
     Ok(Distributions {
-        host: group_items(&rows, book, |r| r.host_id.clone()),
-        source: group_items(&rows, book, |r| r.source.clone()),
-        model: group_items(&rows, book, |r| r.model.clone()),
-        project: group_items(&rows, book, |r| r.project.clone()),
+        host: group_items(&rows, book, |r| r.host_id.clone(), false),
+        source: group_items(&rows, book, |r| r.source.clone(), false),
+        model: group_items(&rows, book, |r| r.model.clone(), true),
+        project: group_items(&rows, book, |r| r.project.clone(), false),
     })
 }
 
@@ -790,6 +832,9 @@ mod tests {
             assert_eq!(d.model[0].key, "gpt-5.4");
             assert_eq!(d.project[0].key, "demo");
             assert!((d.host[0].share - 1.0).abs() < f64::EPSILON);
+            assert!(d.model[0].pricing.is_some());
+            assert!(d.host[0].pricing.is_none());
+            assert!(d.source[0].pricing.is_none());
             Ok(())
         })
         .unwrap();
@@ -830,6 +875,17 @@ mod tests {
             assert_eq!(d.model[1].tokens, 65);
             assert_eq!(d.model[2].tokens, 10);
             assert_eq!(d.model[3].tokens, 8);
+            let prices = book();
+            let fast = prices.lookup("cursor-grok-4.6-xhigh-fast").unwrap();
+            assert_eq!(
+                d.model[0].pricing.as_ref().map(|p| p.input),
+                Some(fast.input)
+            );
+            assert_eq!(
+                d.model[0].pricing.as_ref().map(|p| p.output),
+                Some(fast.output)
+            );
+            assert!(d.host[0].pricing.is_none());
             Ok(())
         })
         .unwrap();

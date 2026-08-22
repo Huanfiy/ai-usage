@@ -16,7 +16,7 @@ pub struct PriceBookFile {
     pub models: HashMap<String, ModelPrice>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ModelPrice {
     #[serde(default)]
     pub input: f64,

@@ -48,3 +48,13 @@ export function fmtTime(iso: string): string {
 export function fmtMetric(metric: Metric, n: number): string {
   return metric === 'cost' ? fmtUsd(n) : fmtTokens(n)
 }
+
+/** Per-token USD → `$x.xx / 1M`. */
+export function fmtPerMillion(perToken: number): string {
+  const x = (Number(perToken) || 0) * 1_000_000
+  if (x <= 0) return '$0 / 1M'
+  if (x >= 100) return '$' + x.toFixed(0) + ' / 1M'
+  if (x >= 1) return '$' + x.toFixed(2) + ' / 1M'
+  const s = x.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')
+  return '$' + s + ' / 1M'
+}

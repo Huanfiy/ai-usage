@@ -33,7 +33,21 @@ export type SeriesPoint = {
   cache_creation: number
 }
 
-export type BreakdownItem = { key: string; tokens: number; cost_usd: number; share: number }
+export type ModelPrice = {
+  input: number
+  output: number
+  cache_read?: number | null
+  cache_write?: number | null
+  reasoning?: number | null
+}
+
+export type BreakdownItem = {
+  key: string
+  tokens: number
+  cost_usd: number
+  share: number
+  pricing?: ModelPrice | null
+}
 
 export type Distributions = {
   host: BreakdownItem[]
