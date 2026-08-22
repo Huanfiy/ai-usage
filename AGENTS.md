@@ -8,7 +8,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 
 | 项 | 内容 |
 | --- | --- |
-| 采集端 | `ai-usage-agent` |
+| 采集端 | `ai-usage-agent`（daemon 本机面板默认 `127.0.0.1:3848`） |
 | 看板端 | `ai-usage-dash` |
 | 语言 | Rust workspace；看板 UI 为 Vue 3 + Vite |
 | 自身文件 | XDG；`--config` / `--data-dir` 可改 |

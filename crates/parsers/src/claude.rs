@@ -81,6 +81,7 @@ impl UsageAdapter for ClaudeCodeAdapter {
             sessions: extract_sessions(&events),
             skipped: false,
             warnings,
+            ..ParseResult::default()
         }
     }
 }

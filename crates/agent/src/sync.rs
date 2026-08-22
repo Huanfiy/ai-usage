@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use ai_usage_parsers::{parse_all, AdapterEnv, ParseCtx};
+use ai_usage_parsers::{default_adapters, parse_adapters, parse_all, AdapterEnv, ParseCtx};
 use ai_usage_protocol::{
     IngestRequest, IngestResponse, UsageBucket, UsageSession, BUCKET_BATCH, SCHEMA_VERSION,
     SESSION_BATCH,
@@ -17,6 +17,14 @@ use crate::state::SyncState;
 
 const PARSER_CONCURRENCY: usize = 4;
 
+pub fn local_source_ids() -> [&'static str; 3] {
+    [
+        ai_usage_protocol::SOURCE_CLAUDE_CODE,
+        ai_usage_protocol::SOURCE_CODEX,
+        ai_usage_protocol::SOURCE_GROK,
+    ]
+}
+
 pub struct SyncReport {
     pub ingested: u64,
     pub sessions: u64,
@@ -28,24 +36,44 @@ pub struct SyncReport {
 }
 
 pub fn run_sync(cfg: &AgentConfig, data_dir: &Path, quiet: bool) -> Result<SyncReport> {
+    run_sync_filtered(cfg, data_dir, quiet, None)
+}
+
+pub fn run_sync_filtered(
+    cfg: &AgentConfig,
+    data_dir: &Path,
+    quiet: bool,
+    only: Option<&HashSet<String>>,
+) -> Result<SyncReport> {
     let cache_dir = data_dir.join("cache");
     std::fs::create_dir_all(&cache_dir)?;
     let home = crate::xdg::home_dir();
+    let extras = crate::cursor_accounts::load(data_dir).unwrap_or_default();
     let ctx = ParseCtx {
         home,
         cache_dir,
         env: AdapterEnv {
             extra_codex_home: None,
+            cursor_extra_accounts: crate::cursor_accounts::to_env(&extras),
             ..AdapterEnv::default()
         },
     };
 
-    let parsed = parse_all(&ctx, PARSER_CONCURRENCY);
+    let parsed = if let Some(only) = only {
+        let adapters: Vec<_> = default_adapters()
+            .into_iter()
+            .filter(|a| only.contains(a.id()))
+            .collect();
+        parse_adapters(&ctx, &adapters, PARSER_CONCURRENCY)
+    } else {
+        parse_all(&ctx, PARSER_CONCURRENCY)
+    };
     let mut all_buckets = Vec::new();
     let mut all_sessions = Vec::new();
     let mut ok_sources = HashSet::new();
     let mut parser_lines = Vec::new();
     let mut warnings = Vec::new();
+    let mut account_prune: HashMap<String, (HashSet<String>, HashSet<String>)> = HashMap::new();
 
     for (source, result) in parsed {
         warnings.extend(result.warnings);
@@ -53,6 +81,15 @@ pub fn run_sync(cfg: &AgentConfig, data_dir: &Path, quiet: bool) -> Result<SyncR
             continue;
         }
         ok_sources.insert(source.clone());
+        if !result.attempted_account_hashes.is_empty() {
+            account_prune.insert(
+                source.clone(),
+                (
+                    result.attempted_account_hashes.into_iter().collect(),
+                    result.succeeded_account_hashes.into_iter().collect(),
+                ),
+            );
+        }
         if result.buckets.is_empty() && result.sessions.is_empty() {
             continue;
         }
@@ -107,7 +144,7 @@ pub fn run_sync(cfg: &AgentConfig, data_dir: &Path, quiet: bool) -> Result<SyncR
         changed_sessions.push(s);
     }
 
-    state.prune(&live_buckets, &live_sessions, &ok_sources);
+    state.prune(&live_buckets, &live_sessions, &ok_sources, &account_prune);
     state.save(&state_path)?;
 
     if changed_buckets.is_empty() && changed_sessions.is_empty() {

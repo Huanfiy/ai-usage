@@ -47,6 +47,7 @@ impl UsageAdapter for GrokAdapter {
             sessions: extract_sessions(&events),
             skipped: false,
             warnings,
+            ..ParseResult::default()
         }
     }
 }

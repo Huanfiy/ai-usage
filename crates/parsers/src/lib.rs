@@ -13,8 +13,14 @@ use ai_usage_protocol::{UsageBucket, UsageSession};
 
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
-pub use cursor::CursorAdapter;
+pub use cursor::{preview_cursor_token, read_ide_cursor_auth, CursorAdapter, CursorTokenPreview};
 pub use grok::GrokAdapter;
+
+#[derive(Debug, Clone, Default)]
+pub struct CursorExtraAccount {
+    pub access_token: String,
+    pub account_label: String,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct AdapterEnv {
@@ -24,6 +30,7 @@ pub struct AdapterEnv {
     pub extra_codex_home: Option<PathBuf>,
     pub grok_home: Option<PathBuf>,
     pub cursor_state_db: Option<PathBuf>,
+    pub cursor_extra_accounts: Vec<CursorExtraAccount>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +56,9 @@ pub struct ParseResult {
     pub sessions: Vec<UsageSession>,
     pub skipped: bool,
     pub warnings: Vec<String>,
+    /// Account hashes this source attempted (Cursor). Empty → source-level prune.
+    pub attempted_account_hashes: Vec<String>,
+    pub succeeded_account_hashes: Vec<String>,
 }
 
 pub trait UsageAdapter: Send + Sync {

@@ -52,13 +52,15 @@
 
 ### Cursor（`cursor`）
 
-**扫描根**：本机 Cursor user-data 里的 `state.vscdb`（Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb` 或 `~/.config/Cursor/…`；macOS Application Support；Windows `%APPDATA%\Cursor`）。可用 `CURSOR_STATE_DB_PATH` 覆盖。有该文件即视为已安装。只读打开，只取 `cursorAuth/accessToken` 与 `cursorAuth/cachedEmail`，禁止拷贝整库。
+**扫描根**：本机 Cursor user-data 里的 `state.vscdb`（Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb` 或 `~/.config/Cursor/…`；macOS Application Support；Windows `%APPDATA%\Cursor`）。可用 `CURSOR_STATE_DB_PATH` 覆盖。有该文件即视为已安装。只读打开，只取 `cursorAuth/accessToken` 与 `cursorAuth/cachedEmail`，禁止拷贝整库，禁止写回。
+
+采集端还可挂额外 access JWT（数据目录 `cursor-accounts.toml`，权限 0600）：不登录 IDE 也能采。与当前 IDE 同号时本机 vscdb 优先。v1 不调用 Cursor oauth 续期；JWT `exp` 约 60 天（从签发起算），401 后重新导入。
 
 **计入**：`GET cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens` 的全量 CSV。`Input (w/o Cache Write)` → `input`；`Input (w/ Cache Write)` → `cache_creation`（两列不相交，禁止折进 `input`）；`Cache Read` → `cache_read`；`Output Tokens` → `output`。`project = unknown`。五项全 0 的行跳过。`Cost` 忽略。每个桶带同一 `account_hash` / `account_label`（邮箱优先 `cachedEmail`，否则 JWT `email`，再否则短 hash）。CSV 禁止按时间窗截断。
 
-**不计**：本地 `bubbleId`、`agent-transcripts`、session。不做 hook，不配账号列表，不加采集开关。第一版只采当前这份 user-data 里登录的那一个账号。
+**不计**：本地 `bubbleId`、`agent-transcripts`、session。不做 hook，不加采集开关。
 
-**失败**：登出或 401/403 记 warning 并 `skipped`（不入 `ok_sources`、不剪增量 state）；超时 / 5xx / 网络同样 `skipped`。
+**失败**：某一账号登出或 401/403 记 warning（IDE：请重新登录；额外凭证：请重新导入），不拖垮其它账号；全部失败才 `skipped`（不入 `ok_sources`、不剪增量 state）。超时 / 5xx / 网络对单账号同样跳过。部分成功时只按成功账号的 `account_hash` 修剪 state。
 
 ## 未接入
 

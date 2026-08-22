@@ -1,11 +1,12 @@
 mod config;
+mod cursor_accounts;
 mod daemon;
+mod panel;
 mod state;
 mod sync;
 mod xdg;
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -46,12 +47,13 @@ enum Commands {
     Sync,
     /// 显示配置与探测到的工具
     Status,
-    /// 前台循环同步，或安装/卸载 user daemon
+    /// 前台循环同步并打开本机面板，或安装/卸载 user daemon
     Daemon {
         #[command(subcommand)]
         cmd: Option<DaemonCmd>,
-        #[arg(long, default_value = "30m")]
-        interval: String,
+        /// 覆盖配置中的两档间隔（不写回）
+        #[arg(long)]
+        interval: Option<String>,
     },
 }
 
@@ -82,12 +84,12 @@ fn run() -> Result<()> {
             no_sync,
         } => {
             let hostname = hostname.unwrap_or_else(config::default_hostname);
-            let cfg = AgentConfig {
-                url: url.trim_end_matches('/').to_string(),
+            let cfg = AgentConfig::new(
+                url.trim_end_matches('/').to_string(),
                 token,
                 hostname,
                 upload_project,
-            };
+            );
             cfg.save(&config_path)?;
             std::fs::create_dir_all(&data_dir)?;
             println!("已写入 {}", config_path.display());
@@ -106,9 +108,11 @@ fn run() -> Result<()> {
         Commands::Daemon { cmd, interval } => match cmd {
             None => {
                 let cfg = AgentConfig::load(&config_path)?;
-                let dur = parse_interval(&interval)?;
-                println!("daemon 每 {interval} 同步一次，Ctrl+C 结束");
-                daemon::run_loop(&cfg, &data_dir, dur)?;
+                let r#override = match interval {
+                    Some(raw) => Some(config::parse_interval(&raw)?),
+                    None => None,
+                };
+                daemon::run_loop(cfg, &config_path, &data_dir, r#override)?;
             }
             Some(DaemonCmd::Install) => {
                 let exe = std::env::current_exe()?;
@@ -121,7 +125,7 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn do_sync(cfg: &AgentConfig, data_dir: &PathBuf) -> Result<()> {
+fn do_sync(cfg: &AgentConfig, data_dir: &Path) -> Result<()> {
     let report = sync::run_sync(cfg, data_dir, false)?;
     for w in &report.warnings {
         eprintln!("  {w}");
@@ -141,7 +145,7 @@ fn do_sync(cfg: &AgentConfig, data_dir: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn status(config_path: &PathBuf, data_dir: &PathBuf) -> Result<()> {
+fn status(config_path: &Path, data_dir: &Path) -> Result<()> {
     println!("config: {}", config_path.display());
     println!("data:   {}", data_dir.display());
     match AgentConfig::load(config_path) {
@@ -152,11 +156,36 @@ fn status(config_path: &PathBuf, data_dir: &PathBuf) -> Result<()> {
                 "token:    {}…",
                 cfg.token.chars().take(12).collect::<String>()
             );
+            println!(
+                "interval: 本地 {} · Cursor {}",
+                cfg.interval_local, cfg.interval_cursor
+            );
+            println!("panel:    http://{}", cfg.bind);
         }
         Err(_) => println!("尚未 init"),
     }
+    let extras = cursor_accounts::load(data_dir).unwrap_or_default();
+    if extras.accounts.is_empty() {
+        println!("cursor extra accounts: (none)");
+    } else {
+        println!("cursor extra accounts:");
+        for a in cursor_accounts::public_views(&extras) {
+            let exp = a
+                .exp
+                .map(|e| format!("exp={e}"))
+                .unwrap_or_else(|| "exp=?".into());
+            println!("  {}  {}  {exp}", a.account_label, a.account_hash);
+        }
+    }
     let home = xdg::home_dir();
-    let ctx = ai_usage_parsers::ParseCtx::new(home, data_dir.join("cache"));
+    let ctx = ai_usage_parsers::ParseCtx {
+        home,
+        cache_dir: data_dir.join("cache"),
+        env: ai_usage_parsers::AdapterEnv {
+            cursor_extra_accounts: cursor_accounts::to_env(&extras),
+            ..ai_usage_parsers::AdapterEnv::default()
+        },
+    };
     for adapter in ai_usage_parsers::default_adapters() {
         let dirs = adapter.detect(&ctx);
         if dirs.is_empty() {
@@ -173,18 +202,4 @@ fn status(config_path: &PathBuf, data_dir: &PathBuf) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn parse_interval(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if let Some(num) = s.strip_suffix('s') {
-        return Ok(Duration::from_secs(num.parse()?));
-    }
-    if let Some(num) = s.strip_suffix('m') {
-        return Ok(Duration::from_secs(num.parse::<u64>()? * 60));
-    }
-    if let Some(num) = s.strip_suffix('h') {
-        return Ok(Duration::from_secs(num.parse::<u64>()? * 3600));
-    }
-    Ok(Duration::from_secs(s.parse()?))
 }

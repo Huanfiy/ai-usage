@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct Claims {
     pub sub: String,
     pub email: String,
+    pub exp: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -12,6 +13,8 @@ struct Payload {
     sub: String,
     #[serde(default)]
     email: String,
+    #[serde(default)]
+    exp: Option<i64>,
 }
 
 /// Decode the JWT payload. The token itself is never returned to callers of parse.
@@ -26,6 +29,7 @@ pub fn decode_claims(token: &str) -> Option<Claims> {
     Some(Claims {
         sub: sub.to_string(),
         email: parsed.email.trim().to_string(),
+        exp: parsed.exp.filter(|e| *e > 0),
     })
 }
 
@@ -85,12 +89,21 @@ fn b64url_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-fn fake_jwt(sub: &str, email: &str) -> String {
-    let payload = if email.is_empty() {
-        format!(r#"{{"sub":"{sub}"}}"#)
+pub(crate) fn fake_jwt(sub: &str, email: &str) -> String {
+    fake_jwt_exp(sub, email, None)
+}
+
+#[cfg(test)]
+pub(crate) fn fake_jwt_exp(sub: &str, email: &str, exp: Option<i64>) -> String {
+    let mut payload = if email.is_empty() {
+        format!(r#"{{"sub":"{sub}""#)
     } else {
-        format!(r#"{{"sub":"{sub}","email":"{email}"}}"#)
+        format!(r#"{{"sub":"{sub}","email":"{email}""#)
     };
+    if let Some(exp) = exp {
+        payload.push_str(&format!(r#","exp":{exp}"#));
+    }
+    payload.push('}');
     format!(
         "eyJhbGciOiJub25lIn0.{}.sig",
         b64url_encode(payload.as_bytes())
@@ -108,10 +121,13 @@ mod tests {
         let claims = decode_claims(&token).unwrap();
         assert_eq!(claims.sub, "user_01abc");
         assert_eq!(claims.email, "you@example.com");
+        assert_eq!(claims.exp, None);
         assert_eq!(
             account_hash_from_sub(&claims.sub),
             account_hash_from_sub("user_01abc")
         );
+        let with_exp = fake_jwt_exp("user_01abc", "you@example.com", Some(1_800_000_000));
+        assert_eq!(decode_claims(&with_exp).unwrap().exp, Some(1_800_000_000));
     }
 
     #[test]

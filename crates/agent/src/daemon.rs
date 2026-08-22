@@ -1,29 +1,139 @@
+use std::collections::HashSet;
+use std::net::TcpListener;
 use std::path::Path;
 #[allow(unused_imports)]
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ai_usage_protocol::SOURCE_CURSOR;
 use anyhow::{Context, Result};
 
 use crate::config::AgentConfig;
+use crate::panel::{self, LastSyncView, PanelState};
+use crate::sync::{self, local_source_ids};
 
-pub fn run_loop(cfg: &AgentConfig, data_dir: &Path, interval: Duration) -> Result<()> {
+pub fn run_loop(
+    cfg: AgentConfig,
+    config_path: &Path,
+    data_dir: &Path,
+    interval_override: Option<Duration>,
+) -> Result<()> {
+    let addr = cfg.bind_addr()?;
+    let listener = TcpListener::bind(addr).with_context(|| format!("绑定面板 {addr} 失败"))?;
+    let bound = listener.local_addr()?;
+    let state = PanelState::new(cfg, config_path.to_path_buf(), data_dir.to_path_buf());
+    let serve_state = std::sync::Arc::clone(&state);
+    std::thread::spawn(move || {
+        if let Err(err) = panel::serve(listener, serve_state) {
+            eprintln!("面板退出: {err:#}");
+        }
+    });
+    if let Some(d) = interval_override {
+        println!(
+            "daemon 每 {} 同步一次（CLI 覆盖），Ctrl+C 结束",
+            format_dur(d)
+        );
+    } else {
+        let cfg = state.config();
+        println!(
+            "daemon 本地 {} · Cursor {}，Ctrl+C 结束",
+            cfg.interval_local, cfg.interval_cursor
+        );
+    }
+    println!("面板: http://{bound}");
+
+    let mut last_local: Option<Instant> = None;
+    let mut last_cursor: Option<Instant> = None;
     loop {
-        match crate::sync::run_sync(cfg, data_dir, false) {
-            Ok(report) => {
-                for line in &report.parser_lines {
-                    eprintln!("  {line}");
+        let cfg = state.config();
+        let local_d = cfg.local_interval()?;
+        let cursor_d = cfg.cursor_interval()?;
+        let force = state.take_sync_request();
+        let run_local = force
+            || interval_override.is_some()
+            || last_local.map(|t| t.elapsed() >= local_d).unwrap_or(true);
+        let run_cursor = force
+            || interval_override.is_some()
+            || last_cursor.map(|t| t.elapsed() >= cursor_d).unwrap_or(true);
+
+        let mut want = HashSet::new();
+        if run_local {
+            for id in local_source_ids() {
+                want.insert(id.to_string());
+            }
+        }
+        if run_cursor {
+            want.insert(SOURCE_CURSOR.to_string());
+        }
+
+        if !want.is_empty() {
+            match sync::run_sync_filtered(&cfg, data_dir, false, Some(&want)) {
+                Ok(report) => {
+                    for line in &report.parser_lines {
+                        eprintln!("  {line}");
+                    }
+                    for w in &report.warnings {
+                        eprintln!("  {w}");
+                    }
+                    if report.changed_buckets + report.changed_sessions > 0 {
+                        eprintln!(
+                            "已同步 {} buckets · {} sessions",
+                            report.ingested, report.sessions
+                        );
+                    }
+                    state.set_last_sync(LastSyncView::from_report(&report));
                 }
-                if report.changed_buckets + report.changed_sessions > 0 {
-                    eprintln!(
-                        "已同步 {} buckets · {} sessions",
-                        report.ingested, report.sessions
-                    );
+                Err(err) => {
+                    eprintln!("同步失败: {err:#}");
+                    state.set_last_sync(LastSyncView::from_error(&err.to_string()));
                 }
             }
-            Err(err) => eprintln!("同步失败: {err:#}"),
+            let now = Instant::now();
+            if run_local {
+                last_local = Some(now);
+            }
+            if run_cursor {
+                last_cursor = Some(now);
+            }
         }
-        std::thread::sleep(interval);
+
+        let wait = if let Some(d) = interval_override {
+            d
+        } else {
+            next_wait(last_local, local_d, last_cursor, cursor_d)
+        };
+        state.wait_timeout(wait);
+    }
+}
+
+fn next_wait(
+    last_local: Option<Instant>,
+    local_d: Duration,
+    last_cursor: Option<Instant>,
+    cursor_d: Duration,
+) -> Duration {
+    let remain = |last: Option<Instant>, d: Duration| {
+        last.map(|t| d.saturating_sub(t.elapsed()))
+            .unwrap_or(Duration::ZERO)
+    };
+    let a = remain(last_local, local_d);
+    let b = remain(last_cursor, cursor_d);
+    let w = a.min(b);
+    if w.is_zero() {
+        Duration::from_secs(1)
+    } else {
+        w
+    }
+}
+
+fn format_dur(d: Duration) -> String {
+    let s = d.as_secs();
+    if s % 3600 == 0 {
+        format!("{}h", s / 3600)
+    } else if s % 60 == 0 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{s}s")
     }
 }
 

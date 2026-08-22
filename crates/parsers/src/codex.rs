@@ -86,6 +86,7 @@ impl UsageAdapter for CodexAdapter {
             sessions: extract_sessions(&all_events),
             skipped: false,
             warnings,
+            ..ParseResult::default()
         }
     }
 }

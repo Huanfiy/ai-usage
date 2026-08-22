@@ -21,8 +21,9 @@ mindmap
     采集端
       探测已安装工具
       只读解析日志
-      30 min 本地聚合
+      两档间隔同步
       hash 增量上报
+      本机回环配置面板
     看板端
       多主机 ingest
       按主机隔离存储
@@ -48,10 +49,10 @@ mindmap
 
 | 程序 | 负责 | 不负责 |
 | --- | --- | --- |
-| `ai-usage-agent` | 发现已安装工具、只读解析、本地聚合成 Bucket / Session、增量上报、可选 user-level daemon | 写入其它工具目录；上报 prompt / 代码；看板查询；估算费用 |
+| `ai-usage-agent` | 发现已安装工具、只读解析、本地聚合成 Bucket / Session、增量上报、可选 user-level daemon 与本机配置面板 | 写入其它工具目录；上报 prompt / 代码；看板查询；估算费用 |
 | `ai-usage-dash` | 鉴权接收、按主机落库、查询聚合、费用估算、内嵌静态 UI | 扫描宿主机 AI 日志；依赖 Postgres / Redis；运行时访问价目网站 |
 
-默认看板地址 `127.0.0.1:3847`。绑定非回环地址时须设置 `ui_token`，或声明前面已有反向代理（`--behind-proxy`）。ingest 始终按主机一把 Bearer token；本机回环默认不强制 UI 登录。
+默认看板地址 `127.0.0.1:3847`。绑定非回环地址时须设置 `ui_token`，或声明前面已有反向代理（`--behind-proxy`）。ingest 始终按主机一把 Bearer token；本机回环默认不强制 UI 登录。采集端 daemon 另开本机面板（默认 `127.0.0.1:3848`），只绑回环，用来看/改本机配置、挂 Cursor 额外凭证；dash 不向 agent 下发配置。
 
 ## 数据契约
 
@@ -143,6 +144,7 @@ flowchart TB
   subgraph local [拓扑 A · 本机]
     la["ai-usage-agent"] -->|127.0.0.1:3847| ld["ai-usage-dash"]
     b1[浏览器] --> ld
+    b1 -.->|127.0.0.1:3848 配置| la
   end
   subgraph remote [拓扑 B · 集中看板]
     a1[Host1 agent] --> sd["ai-usage-dash"]
@@ -152,8 +154,8 @@ flowchart TB
   end
 ```
 
-- **拓扑 A**：看板绑回环，本机 agent 上报。空库首次 `serve` 会签发一把本机 ingest token（只显示一次）。
-- **拓扑 B**：看板一台、agent 多台。Agent 跑在用户会话里（可选 user systemd / launchd），不装 system 服务。看板可选 `deploy/Dockerfile.dash`（默认 `--bind 0.0.0.0:3847 --behind-proxy`），卷挂载数据目录。
+- **拓扑 A**：看板绑回环，本机 agent 上报。空库首次 `serve` 会签发一把本机 ingest token（只显示一次）。`ai-usage-agent daemon` 提供本机配置面板。
+- **拓扑 B**：看板一台、agent 多台。Agent 跑在用户会话里（可选 user systemd / launchd），不装 system 服务。各机自己的面板只在该机回环可开。看板可选 `deploy/Dockerfile.dash`（默认 `--bind 0.0.0.0:3847 --behind-proxy`），卷挂载数据目录。
 
 ## 污染边界与信任
 
@@ -165,6 +167,7 @@ flowchart TB
 | --- | --- |
 | ingest | 每机一把 Bearer token，可吊销；吊销后该主机无法再报。已吊销的主机可删除其用量 |
 | UI / 查询 | 回环默认开放；非回环须 `ui_token` 或反向代理 TLS |
+| agent 面板 | 只绑回环；Cursor 额外 JWT 只存在该机数据目录，不上报看板 |
 
 ## 本阶段范围
 

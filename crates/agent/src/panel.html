@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Usage 采集端</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --card: #fffcf7;
+      --ink: #1c1915;
+      --muted: #6b645b;
+      --line: #e4ddd2;
+      --accent: #2f6f5e;
+      --accent-ink: #f7fffb;
+      --danger: #a33b2b;
+      --ok: #2f6f5e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1 { font-size: 1.6rem; font-weight: 600; margin: 0 0 4px; }
+    .lead { color: var(--muted); margin: 0 0 28px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 20px 22px;
+      margin-bottom: 16px;
+    }
+    h2 { font-size: 1.05rem; margin: 0 0 14px; font-weight: 600; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      background: #fff;
+    }
+    textarea { min-height: 72px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 140px; }
+    .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--ink); }
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+    button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    .msg { min-height: 1.4em; margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
+    .msg.err { color: var(--danger); }
+    .msg.ok { color: var(--ok); }
+    ul.list { list-style: none; padding: 0; margin: 0; }
+    ul.list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }
+    ul.list li:first-child { border-top: 0; }
+    .meta { color: var(--muted); font-size: 0.85rem; }
+    .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      font-size: 0.8rem;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #ece6db;
+      color: var(--ink);
+    }
+    .chip.off { color: var(--muted); background: transparent; border: 1px dashed var(--line); }
+    pre.sync {
+      white-space: pre-wrap;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 8px 0 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>采集端</h1>
+    <p class="lead">本机配置。凭证只留在这台机器上，不会上报看板。</p>
+
+    <section>
+      <h2>同步</h2>
+      <div id="tools" class="tools"></div>
+      <pre class="sync" id="last-sync">尚未同步</pre>
+      <div class="actions">
+        <button type="button" id="sync-now">立即同步</button>
+      </div>
+      <div class="msg" id="sync-msg"></div>
+    </section>
+
+    <section>
+      <h2>上报</h2>
+      <label for="url">看板地址</label>
+      <input id="url" type="text" autocomplete="off" />
+      <label for="hostname">主机显示名</label>
+      <input id="hostname" type="text" autocomplete="off" />
+      <div class="row">
+        <div>
+          <label for="interval_local">本地工具间隔</label>
+          <input id="interval_local" type="text" placeholder="5m" />
+        </div>
+        <div>
+          <label for="interval_cursor">Cursor 间隔</label>
+          <input id="interval_cursor" type="text" placeholder="30m" />
+        </div>
+      </div>
+      <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
+      <p class="meta" id="bind-line"></p>
+      <div class="actions">
+        <button type="button" id="save-cfg">保存配置</button>
+      </div>
+      <div class="msg" id="cfg-msg"></div>
+    </section>
+
+    <section>
+      <h2>Cursor 账号</h2>
+      <p class="meta">可导入当前 IDE 登录，或粘贴 access token（JWT / WorkosCursorSessionToken）。约 60 天过期，过期后重新导入。当前 IDE 登录会自动采集，不必重复导入。</p>
+      <p class="meta" id="ide-line">IDE 登录：未检测到</p>
+      <ul class="list" id="accounts"></ul>
+      <label for="token">粘贴凭证</label>
+      <textarea id="token" placeholder="eyJ… 或 sub::eyJ…"></textarea>
+      <div class="actions">
+        <button type="button" id="import-ide" class="ghost">导入当前 IDE 登录</button>
+        <button type="button" id="add-token">添加</button>
+      </div>
+      <div class="msg" id="acct-msg"></div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function fmtExp(exp) {
+      if (!exp) return "到期时间未知";
+      const ms = exp * 1000 - Date.now();
+      const days = Math.floor(ms / 86400000);
+      const d = new Date(exp * 1000);
+      const when = d.toISOString().slice(0, 10);
+      if (ms <= 0) return "已过期 · " + when;
+      return "剩余 " + days + " 天 · " + when;
+    }
+    function setMsg(id, text, kind) {
+      const el = $(id);
+      el.textContent = text || "";
+      el.className = "msg" + (kind ? " " + kind : "");
+    }
+    async function api(path, opts) {
+      const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+      const text = await res.text();
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { error: text }; }
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+    function render(s) {
+      $("url").value = s.url || "";
+      $("hostname").value = s.hostname || "";
+      $("interval_local").value = s.interval_local || "";
+      $("interval_cursor").value = s.interval_cursor || "";
+      $("upload_project").checked = !!s.upload_project;
+      $("bind-line").textContent = "面板 " + (s.panel || "") + " · ingest token " + (s.token_prefix || "");
+      const tools = $("tools");
+      tools.innerHTML = "";
+      (s.tools || []).forEach((t) => {
+        const span = document.createElement("span");
+        span.className = "chip" + (t.found ? "" : " off");
+        span.textContent = t.found ? t.id : t.id + " 未发现";
+        tools.appendChild(span);
+      });
+      const ls = s.last_sync;
+      if (!ls) {
+        $("last-sync").textContent = "尚未同步";
+      } else {
+        const lines = [];
+        lines.push((ls.at || "") + (ls.error ? " · 失败" : " · 完成"));
+        if (ls.error) lines.push(ls.error);
+        (ls.parser_lines || []).forEach((x) => lines.push(x));
+        (ls.warnings || []).forEach((x) => lines.push(x));
+        if (!ls.error) lines.push("上报 " + (ls.ingested || 0) + " buckets · " + (ls.sessions || 0) + " sessions");
+        $("last-sync").textContent = lines.join("\n");
+      }
+      if (s.ide_cursor) {
+        $("ide-line").textContent = "IDE 登录：" + s.ide_cursor.account_label + " · " + fmtExp(s.ide_cursor.exp);
+      } else {
+        $("ide-line").textContent = "IDE 登录：未检测到";
+      }
+      const ul = $("accounts");
+      ul.innerHTML = "";
+      (s.cursor_accounts || []).forEach((a) => {
+        const li = document.createElement("li");
+        const left = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = a.account_label;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = fmtExp(a.exp);
+        left.appendChild(name);
+        left.appendChild(meta);
+        const btn = document.createElement("button");
+        btn.className = "danger";
+        btn.textContent = "删除";
+        btn.onclick = async () => {
+          try {
+            await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
+            setMsg("acct-msg", "已删除", "ok");
+            refresh();
+          } catch (e) { setMsg("acct-msg", e.message, "err"); }
+        };
+        li.appendChild(left);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      });
+      if (!(s.cursor_accounts || []).length) {
+        const li = document.createElement("li");
+        li.innerHTML = "<span class='meta'>尚未挂额外账号</span>";
+        ul.appendChild(li);
+      }
+    }
+    async function refresh() {
+      const s = await api("/v1/status");
+      render(s);
+    }
+    $("save-cfg").onclick = async () => {
+      try {
+        await api("/v1/config", {
+          method: "PUT",
+          body: JSON.stringify({
+            url: $("url").value.trim(),
+            hostname: $("hostname").value.trim(),
+            upload_project: $("upload_project").checked,
+            interval_local: $("interval_local").value.trim(),
+            interval_cursor: $("interval_cursor").value.trim(),
+          }),
+        });
+        setMsg("cfg-msg", "已保存，间隔立即生效", "ok");
+        refresh();
+      } catch (e) { setMsg("cfg-msg", e.message, "err"); }
+    };
+    $("sync-now").onclick = async () => {
+      setMsg("sync-msg", "同步中…");
+      try {
+        await api("/v1/sync", { method: "POST", body: "{}" });
+        setMsg("sync-msg", "已请求同步", "ok");
+        setTimeout(refresh, 800);
+      } catch (e) { setMsg("sync-msg", e.message, "err"); }
+    };
+    $("import-ide").onclick = async () => {
+      try {
+        await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ import_ide: true }) });
+        setMsg("acct-msg", "已导入当前 IDE 登录", "ok");
+        refresh();
+      } catch (e) { setMsg("acct-msg", e.message, "err"); }
+    };
+    $("add-token").onclick = async () => {
+      try {
+        await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ token: $("token").value }) });
+        $("token").value = "";
+        setMsg("acct-msg", "已添加", "ok");
+        refresh();
+      } catch (e) { setMsg("acct-msg", e.message, "err"); }
+    };
+    refresh().catch((e) => setMsg("sync-msg", e.message, "err"));
+    setInterval(() => refresh().catch(() => {}), 8000);
+  </script>
+</body>
+</html>
