@@ -82,7 +82,7 @@
       min-width: 0;
     }
     .kpi-sync { flex: 0 1 260px; }
-    .kpi-tools { flex: 0 0 auto; }
+    .kpi-tools { flex: 0 0 auto; position: relative; z-index: 2; }
     .kpi .label { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
     .sync-lines {
       display: flex;
@@ -108,6 +108,7 @@
     .sync-line.err .t { color: var(--rose); }
     .tool-icons { display: flex; gap: 6px; margin-top: 6px; }
     .tool {
+      position: relative;
       width: 38px;
       height: 38px;
       border-radius: 10px;
@@ -121,6 +122,32 @@
     }
     .tool svg, .tool img { width: 22px; height: 22px; display: block; object-fit: contain; }
     .tool.on { opacity: 1; filter: none; }
+    .tool::after {
+      content: attr(data-tip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      transform: translateX(-50%) translateY(4px);
+      white-space: nowrap;
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: rgba(11, 14, 18, 0.94);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 5;
+      transition: opacity 0.06s ease, transform 0.06s ease;
+      transition-delay: 0s;
+    }
+    .tool:hover::after {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+      transition-delay: 0.08s;
+    }
     .card {
       background: var(--bg-elev);
       border: 1px solid var(--line);
@@ -150,10 +177,11 @@
       border: 1px solid var(--mint);
       background: var(--mint-dim);
       color: var(--mint);
-      font-size: 22px;
-      line-height: 1;
       padding: 0;
+      display: grid;
+      place-items: center;
     }
+    .plus svg { width: 16px; height: 16px; display: block; }
     .acct-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -409,7 +437,11 @@
     <section class="card">
       <div class="card-head">
         <h2>Cursor 账号</h2>
-        <button type="button" class="plus" id="add-open" title="添加账号" aria-label="添加账号">+</button>
+        <button type="button" class="plus" id="add-open" title="添加账号" aria-label="添加账号">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5v14"/><path d="M5 12h14"/>
+          </svg>
+        </button>
       </div>
       <div class="acct-grid" id="accounts"></div>
       <div class="msg" id="acct-msg"></div>
@@ -611,8 +643,8 @@
     function toolMark(t) {
       const label = TOOL_MARKS[t.id] || t.id;
       const wrap = el("div", "tool" + (t.found ? " on" : ""));
-      wrap.title = label + (t.found ? "" : " · 未发现");
-      wrap.setAttribute("aria-label", wrap.title);
+      wrap.dataset.tip = label + (t.found ? "" : " · 未发现");
+      wrap.setAttribute("aria-label", wrap.dataset.tip);
       const img = document.createElement("img");
       img.src = "/icons/" + encodeURIComponent(t.id) + ".svg";
       img.alt = "";
