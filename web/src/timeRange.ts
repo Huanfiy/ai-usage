@@ -41,12 +41,10 @@ export function parseYmd(ymd: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d
 }
 
-export function fmtMdy(ymd: string): string {
+export function fmtYmd(ymd: string): string {
   const d = parseYmd(ymd)
   if (!d) return ymd
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${mm} / ${dd} / ${d.getFullYear()}`
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
 }
 
 export function resolvePreset(id: Exclude<PresetId, 'custom'>, now = new Date()): { from: Date; to: Date } {
@@ -73,6 +71,6 @@ export function resolveCustom(fromYmd: string, toYmd: string, now = new Date()):
 }
 
 export function presetLabel(id: PresetId, from: Date, to: Date): string {
-  if (id === 'custom') return `${fmtMdy(toYmd(from))} – ${fmtMdy(toYmd(to))}`
+  if (id === 'custom') return `${fmtYmd(toYmd(from))} – ${fmtYmd(toYmd(to))}`
   return PRESETS.find((p) => p.id === id)?.label ?? id
 }
