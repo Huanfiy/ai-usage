@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
-use crate::pricing::{PriceBook, TokenSlice};
+use crate::pricing::{display_model, PriceBook, TokenSlice};
 
 #[derive(Debug, Clone)]
 pub struct QueryFilter {
@@ -98,6 +98,7 @@ struct TokenRow {
     host_id: String,
     source: String,
     model: String,
+    billed_model: String,
     project: String,
     bucket_start: String,
     input: i64,
@@ -135,17 +136,17 @@ fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<V
         params.push(host.clone());
     }
     push_in(&mut sql, &mut params, "source", &f.sources);
-    push_in(&mut sql, &mut params, "model", &f.models);
     if !f.hide_projects {
         push_in(&mut sql, &mut params, "project", &f.projects);
     }
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
+    let mut rows = stmt
         .query_map(params_from_iter(params.iter()), |r| {
             Ok(TokenRow {
                 host_id: r.get(0)?,
                 source: r.get(1)?,
                 model: r.get(2)?,
+                billed_model: r.get(2)?,
                 project: if f.hide_projects {
                     "unknown".into()
                 } else {
@@ -161,6 +162,17 @@ fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<V
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !f.models.is_empty() {
+        let wanted: std::collections::HashSet<String> = f
+            .models
+            .iter()
+            .map(|m| display_model(m).to_ascii_lowercase())
+            .collect();
+        rows.retain(|r| wanted.contains(&display_model(&r.billed_model).to_ascii_lowercase()));
+    }
+    for r in &mut rows {
+        r.model = display_model(&r.billed_model);
+    }
     Ok(rows)
 }
 
@@ -219,7 +231,7 @@ pub fn summary(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<S
         tokens.add_row(r);
         hosts.insert(r.host_id.clone());
         sources.insert(r.source.clone());
-        if let Some(c) = book.cost_usd(&r.model, token_slice(r)) {
+        if let Some(c) = book.cost_usd(&r.billed_model, token_slice(r)) {
             cost += c;
             priced += r.total;
         }
@@ -303,7 +315,9 @@ pub fn series(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Ve
     let mut map: std::collections::BTreeMap<String, SeriesPoint> =
         std::collections::BTreeMap::new();
     for r in rows {
-        let cost = book.cost_usd(&r.model, token_slice(&r)).unwrap_or(0.0);
+        let cost = book
+            .cost_usd(&r.billed_model, token_slice(&r))
+            .unwrap_or(0.0);
         let e = map
             .entry(r.bucket_start.clone())
             .or_insert_with(|| SeriesPoint {
@@ -356,7 +370,9 @@ fn group_items(
     let mut map: std::collections::BTreeMap<String, (i64, f64)> = std::collections::BTreeMap::new();
     let mut total = 0i64;
     for r in rows {
-        let cost = book.cost_usd(&r.model, token_slice(r)).unwrap_or(0.0);
+        let cost = book
+            .cost_usd(&r.billed_model, token_slice(r))
+            .unwrap_or(0.0);
         let e = map.entry(key_of(r)).or_insert((0, 0.0));
         e.0 += r.total;
         e.1 += cost;
@@ -425,7 +441,9 @@ pub fn activity(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<
         let dow = utc.weekday().num_days_from_sunday() as u8;
         let hour = utc.hour() as u8;
         let idx = (dow as usize) * 24 + (hour as usize);
-        let cost = book.cost_usd(&r.model, token_slice(&r)).unwrap_or(0.0);
+        let cost = book
+            .cost_usd(&r.billed_model, token_slice(&r))
+            .unwrap_or(0.0);
         cells[idx].0 += r.total;
         cells[idx].1 += cost;
     }
@@ -771,6 +789,87 @@ mod tests {
             assert_eq!(d.model[0].key, "gpt-5.4");
             assert_eq!(d.project[0].key, "demo");
             assert!((d.host[0].share - 1.0).abs() < f64::EPSILON);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn bucket_model(model: &str, input: i64) -> UsageBucket {
+        let mut b = sample_bucket(10, input, 0, 0, 0);
+        b.model = model.into();
+        b
+    }
+
+    #[test]
+    fn distributions_fold_effort_keep_fast() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![
+                    bucket_model("cursor-grok-4.6-xhigh-fast", 100),
+                    bucket_model("cursor-grok-4.6-high-fast", 40),
+                    bucket_model("cursor-grok-4.6-high", 20),
+                    bucket_model("cursor-grok-4.6-xhigh", 30),
+                    bucket_model("grok-4.6-build", 15),
+                    bucket_model("gpt-5.6-sol-max", 6),
+                    bucket_model("gpt-5.6-sol", 4),
+                    bucket_model("claude-fable-5-thinking-max", 8),
+                ],
+                vec![],
+            );
+            let d = distributions(c, &book(), &window())?;
+            let keys: Vec<&str> = d.model.iter().map(|i| i.key.as_str()).collect();
+            assert_eq!(
+                keys,
+                vec!["grok-4.6-fast", "grok-4.6", "gpt-5.6-sol", "claude-fable-5"]
+            );
+            assert_eq!(d.model[0].tokens, 140);
+            assert_eq!(d.model[1].tokens, 65);
+            assert_eq!(d.model[2].tokens, 10);
+            assert_eq!(d.model[3].tokens, 8);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn model_filter_matches_folded_and_raw_slugs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![
+                    bucket_model("cursor-grok-4.6-xhigh-fast", 100),
+                    bucket_model("cursor-grok-4.6-high", 50),
+                ],
+                vec![],
+            );
+            let mut folded = window();
+            folded.models = vec!["cursor-grok-4.6-fast".into()];
+            let d = distributions(c, &book(), &folded)?;
+            assert_eq!(d.model.len(), 1);
+            assert_eq!(d.model[0].key, "grok-4.6-fast");
+            assert_eq!(d.model[0].tokens, 100);
+
+            let mut raw = window();
+            raw.models = vec!["cursor-grok-4.6-xhigh-fast".into()];
+            let d = distributions(c, &book(), &raw)?;
+            assert_eq!(d.model[0].tokens, 100);
+
+            let mut family = window();
+            family.models = vec!["grok-4.6".into()];
+            let d = distributions(c, &book(), &family)?;
+            assert_eq!(d.model[0].key, "grok-4.6");
+            assert_eq!(d.model[0].tokens, 50);
+
+            let opts = filter_options(c, &window())?;
+            assert_eq!(
+                opts.models,
+                vec!["grok-4.6".to_string(), "grok-4.6-fast".into()]
+            );
             Ok(())
         })
         .unwrap();

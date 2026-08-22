@@ -134,7 +134,7 @@ flowchart TB
   cost --> out[费用 + coverage]
 ```
 
-模型 id 先去掉 `anthropic/`、`openai/` 等前缀再匹配。`composer-*` / `cursor-grok-*` 会去掉 effort 后缀（`xhigh`/`high`/`medium`/`low`）再匹配 Fast 与标准档，避免前缀误把 Fast 算成标准价。匹配失败记入 uncovered，不中断查询。
+模型 id 先去掉 `anthropic/`、`openai/` 等前缀再匹配。查询展示与模型筛选去掉 effort / thinking 段（`xhigh`/`high`/`medium`/`low`/`max`/`thinking`）、渠道前缀 `cursor-` 与快照后缀 `-build`，Fast 档单独成项；入库仍保留原始 slug，计价仍按原始 slug。`composer-*` / `cursor-grok-*` 计价同样去掉 effort 后再匹配 Fast 与标准档，避免前缀误把 Fast 算成标准价。匹配失败记入 uncovered，不中断查询。
 
 ## 部署拓扑
 
