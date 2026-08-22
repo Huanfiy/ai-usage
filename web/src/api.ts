@@ -135,4 +135,8 @@ export const api = {
     const r = await fetch(`/v1/tokens/${hostId}`, { method: 'DELETE' })
     if (!r.ok) throw new Error(`/v1/tokens/${hostId} ${r.status}`)
   },
+  deleteHost: async (hostId: string) => {
+    const r = await fetch(`/v1/hosts/${encodeURIComponent(hostId)}`, { method: 'DELETE' })
+    if (!r.ok) throw new Error(`/v1/hosts/${hostId} ${r.status}`)
+  },
 }

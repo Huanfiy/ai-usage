@@ -174,10 +174,243 @@ pub fn revoke_token(conn: &Connection, host_id: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteHostOutcome {
+    Deleted,
+    NotFound,
+    NotRevoked,
+    AccountScoped,
+}
+
+/// Remove a revoked machine host and its usage. Leaves other hosts and `acct:` rows untouched.
+pub fn delete_host(conn: &Connection, host_id: &str) -> Result<DeleteHostOutcome> {
+    if host_id.starts_with("acct:") {
+        return Ok(DeleteHostOutcome::AccountScoped);
+    }
+    let revoked_at: Option<Option<String>> = conn
+        .query_row(
+            "SELECT revoked_at FROM ingest_tokens WHERE host_id = ?1",
+            params![host_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match revoked_at {
+        None => return Ok(DeleteHostOutcome::NotFound),
+        Some(None) => return Ok(DeleteHostOutcome::NotRevoked),
+        Some(Some(_)) => {}
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM usage_buckets WHERE host_id = ?1",
+        params![host_id],
+    )?;
+    tx.execute(
+        "DELETE FROM usage_sessions WHERE host_id = ?1",
+        params![host_id],
+    )?;
+    tx.execute(
+        "DELETE FROM daily_rollups WHERE host_id = ?1",
+        params![host_id],
+    )?;
+    tx.execute(
+        "DELETE FROM ingest_tokens WHERE host_id = ?1",
+        params![host_id],
+    )?;
+    tx.execute("DELETE FROM hosts WHERE host_id = ?1", params![host_id])?;
+    tx.commit()?;
+    Ok(DeleteHostOutcome::Deleted)
+}
+
 pub fn token_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM ingest_tokens WHERE revoked_at IS NULL",
         [],
         |r| r.get(0),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingest::ingest;
+    use ai_usage_protocol::{
+        account_hash_from_sub, account_host_id, round_to_half_hour, IngestRequest, UsageBucket,
+        UsageSession, SOURCE_CURSOR,
+    };
+    use chrono::{TimeZone, Utc};
+
+    fn machine_bucket(tokens: i64) -> UsageBucket {
+        let ts = Utc.with_ymd_and_hms(2026, 1, 15, 10, 17, 0).unwrap();
+        UsageBucket {
+            source: "codex".into(),
+            model: "gpt-5.4".into(),
+            project: "demo".into(),
+            bucket_start: round_to_half_hour(ts),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: tokens,
+            account_hash: String::new(),
+            account_label: String::new(),
+        }
+    }
+
+    fn cursor_bucket(hash: &str, tokens: i64) -> UsageBucket {
+        let ts = Utc.with_ymd_and_hms(2026, 1, 15, 10, 17, 0).unwrap();
+        UsageBucket {
+            source: SOURCE_CURSOR.into(),
+            model: "composer-1".into(),
+            project: "unknown".into(),
+            bucket_start: round_to_half_hour(ts),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: tokens,
+            account_hash: hash.into(),
+            account_label: "a@x.com".into(),
+        }
+    }
+
+    fn session() -> UsageSession {
+        let at = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        UsageSession {
+            source: "codex".into(),
+            project: "demo".into(),
+            session_hash: "sess-a".into(),
+            first_message_at: at,
+            last_message_at: at,
+            duration_seconds: 60,
+            active_seconds: 40,
+            message_count: 4,
+            user_message_count: 2,
+        }
+    }
+
+    fn seed_token(c: &Connection, host_id: &str, hostname: &str) {
+        insert_token(
+            c,
+            &format!("hash-{host_id}"),
+            host_id,
+            "aiu_test",
+            None,
+            hostname,
+        )
+        .unwrap();
+    }
+
+    fn ingest_one(c: &Connection, host: &str, hostname: &str, buckets: Vec<UsageBucket>) {
+        ingest(
+            c,
+            host,
+            hostname,
+            Some("0.1.0"),
+            IngestRequest {
+                schema_version: 1,
+                hostname: Some(hostname.into()),
+                agent_version: Some("0.1.0".into()),
+                buckets,
+                sessions: vec![session()],
+            },
+        )
+        .unwrap();
+    }
+
+    fn count(c: &Connection, sql: &str, host_id: &str) -> i64 {
+        c.query_row(sql, params![host_id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn delete_revoked_host_keeps_other_hosts_and_account_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed_token(c, "hostA", "pc1");
+            seed_token(c, "hostB", "pc2");
+            let hash = account_hash_from_sub("acct-alpha");
+            let acct = account_host_id(&hash);
+            ingest_one(
+                c,
+                "hostA",
+                "pc1",
+                vec![machine_bucket(40), cursor_bucket(&hash, 100)],
+            );
+            ingest_one(c, "hostB", "pc2", vec![machine_bucket(25)]);
+
+            assert_eq!(delete_host(c, "hostA")?, DeleteHostOutcome::NotRevoked);
+            assert!(revoke_token(c, "hostA")?);
+            assert_eq!(delete_host(c, "hostA")?, DeleteHostOutcome::Deleted);
+            assert_eq!(delete_host(c, "hostA")?, DeleteHostOutcome::NotFound);
+            assert_eq!(delete_host(c, &acct)?, DeleteHostOutcome::AccountScoped);
+
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM ingest_tokens WHERE host_id = ?1",
+                    "hostA"
+                ),
+                0
+            );
+            assert_eq!(
+                count(c, "SELECT COUNT(*) FROM hosts WHERE host_id = ?1", "hostA"),
+                0
+            );
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM usage_buckets WHERE host_id = ?1",
+                    "hostA"
+                ),
+                0
+            );
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM usage_sessions WHERE host_id = ?1",
+                    "hostA"
+                ),
+                0
+            );
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM daily_rollups WHERE host_id = ?1",
+                    "hostA"
+                ),
+                0
+            );
+
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM ingest_tokens WHERE host_id = ?1",
+                    "hostB"
+                ),
+                1
+            );
+            assert_eq!(
+                count(
+                    c,
+                    "SELECT COUNT(*) FROM usage_buckets WHERE host_id = ?1",
+                    "hostB"
+                ),
+                1
+            );
+            assert_eq!(
+                count(c, "SELECT COUNT(*) FROM hosts WHERE host_id = ?1", &acct),
+                1
+            );
+            let acct_tokens: i64 = c.query_row(
+                "SELECT input_tokens FROM usage_buckets WHERE host_id = ?1",
+                params![acct],
+                |r| r.get(0),
+            )?;
+            assert_eq!(acct_tokens, 100);
+            Ok(())
+        })
+        .unwrap();
+    }
 }

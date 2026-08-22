@@ -66,6 +66,19 @@ async function revoke(hostId: string) {
     err.value = e instanceof Error ? e.message : String(e)
   }
 }
+
+async function remove(hostId: string) {
+  if (!confirm('删除该主机及其用量？此操作不可恢复。Cursor 账号用量会保留。')) return
+  err.value = ''
+  try {
+    await api.deleteHost(hostId)
+    if (newToken.value) newToken.value = ''
+    await loadTokens()
+    emit('changed')
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  }
+}
 </script>
 
 <template>
@@ -113,6 +126,7 @@ async function revoke(hostId: string) {
             <td>{{ t.revoked_at ? '已吊销' : '有效' }}</td>
             <td>
               <button v-if="!t.revoked_at" type="button" class="chip" @click="revoke(t.host_id)">吊销</button>
+              <button v-else type="button" class="chip" @click="remove(t.host_id)">删除</button>
             </td>
           </tr>
         </tbody>

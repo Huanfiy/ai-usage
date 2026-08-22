@@ -68,6 +68,9 @@ enum TokenCmd {
     Revoke {
         host_id: String,
     },
+    Delete {
+        host_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -167,6 +170,12 @@ async fn run() -> Result<()> {
                     bail!("未找到可吊销的 token");
                 }
             }
+            TokenCmd::Delete { host_id } => match db.with(|c| db::delete_host(c, &host_id))? {
+                db::DeleteHostOutcome::Deleted => println!("已删除 {host_id}"),
+                db::DeleteHostOutcome::NotFound => bail!("未找到主机"),
+                db::DeleteHostOutcome::NotRevoked => bail!("请先吊销 token 再删除"),
+                db::DeleteHostOutcome::AccountScoped => bail!("账号级主机不能删除"),
+            },
         },
         Commands::Pricing { cmd } => match cmd {
             PricingCmd::Update => {

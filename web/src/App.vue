@@ -108,6 +108,9 @@ async function refresh() {
     activity.value = act.cells ?? []
     sessions.value = sess.items
     hosts.value = hs.items
+    if (host.value !== 'all' && !hosts.value.some((h) => h.host_id === host.value)) {
+      host.value = 'all'
+    }
     options.value = fo
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)

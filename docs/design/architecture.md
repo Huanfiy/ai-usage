@@ -75,11 +75,11 @@ mindmap
 
 主机身份以 ingest token 派生的 `host_id` 为准。payload 里的 `hostname` 只作显示名，允许重复、允许改名。两台都叫 `ubuntu` 的机器不会串数据。跨主机「汇总」只发生在查询层；删除或吊销某一主机不改写其它主机的行。
 
-账号级源（目前仅 Cursor）例外：ingest 用校验过的 `account_hash` 把桶写到 `acct:<hash>`，同一登录在多机上报时落同一行，全机 `SUM` 只计一次。吊销某台机器的 ingest token 不删除该账号行。
+账号级源（目前仅 Cursor）例外：ingest 用校验过的 `account_hash` 把桶写到 `acct:<hash>`，同一登录在多机上报时落同一行，全机 `SUM` 只计一次。吊销或删除某台机器不删除该账号行。
 
 ![token 派生 host_id，hostname 仅显示](assets/identity.svg)
 
-查询接口同一套：不传 `host` 为全主机汇总，传入则为单机视图。看板提供 KPI（含窗口内消息与时长合计）、时间范围、工具 / 模型 / 项目 / 主机筛选、趋势、四维分布、分时热力图（Bucket 小时格）、session 列表、主机上次同步，以及 token 签发与吊销。
+查询接口同一套：不传 `host` 为全主机汇总，传入则为单机视图。看板提供 KPI（含窗口内消息与时长合计）、时间范围、工具 / 模型 / 项目 / 主机筛选、趋势、四维分布、分时热力图（Bucket 小时格）、session 列表、主机上次同步，以及 token 签发、吊销与删除。已吊销的主机可删除：清掉该机 token、主机行与其用量，其它主机与 `acct:` 行不动。
 
 ## 端到端数据流
 
@@ -163,7 +163,7 @@ flowchart TB
 
 | 通道 | 鉴权 |
 | --- | --- |
-| ingest | 每机一把 Bearer token，可吊销；吊销后该主机无法再报 |
+| ingest | 每机一把 Bearer token，可吊销；吊销后该主机无法再报。已吊销的主机可删除其用量 |
 | UI / 查询 | 回环默认开放；非回环须 `ui_token` 或反向代理 TLS |
 
 ## 本阶段范围

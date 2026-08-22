@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/activity", get(activity))
         .route("/v1/sessions", get(sessions))
         .route("/v1/hosts", get(hosts))
+        .route("/v1/hosts/{host_id}", delete(delete_host))
         .route("/v1/filters", get(filters))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{host_id}", delete(revoke_token))
@@ -291,6 +292,28 @@ async fn revoke_token(
         return Err(ApiError::Bad("token not found".into()));
     }
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn delete_host(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(host_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let outcome = st
+        .db
+        .with(|c| db::delete_host(c, &host_id))
+        .map_err(ApiError::internal)?;
+    match outcome {
+        db::DeleteHostOutcome::Deleted => Ok(Json(json!({ "ok": true }))),
+        db::DeleteHostOutcome::NotFound => Err(ApiError::Bad("host not found".into())),
+        db::DeleteHostOutcome::NotRevoked => {
+            Err(ApiError::Bad("revoke token before deleting host".into()))
+        }
+        db::DeleteHostOutcome::AccountScoped => Err(ApiError::Bad(
+            "account-scoped host cannot be deleted".into(),
+        )),
+    }
 }
 
 async fn static_handler(uri: Uri) -> Response {
