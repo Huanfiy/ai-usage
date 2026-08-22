@@ -2,9 +2,11 @@ use std::time::Duration;
 
 const DEFAULT_BASE: &str = "https://cursor.com";
 const EXPORT_PATH: &str = "/api/dashboard/export-usage-events-csv?strategy=tokens";
+const SUMMARY_PATH: &str = "/api/usage-summary";
 const SESSION_COOKIE: &str = "WorkosCursorSessionToken";
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
 const TIMEOUT_SECS: u64 = 20;
+const SUMMARY_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug)]
 pub enum FetchError {
@@ -14,10 +16,30 @@ pub enum FetchError {
 }
 
 pub fn fetch_usage_csv(sub: &str, jwt: &str) -> Result<String, FetchError> {
-    let url = export_url();
+    fetch_with_cookies(sub, jwt, |cookie| {
+        get_body(&export_url(), cookie, "text/csv,*/*;q=0.8", TIMEOUT_SECS)
+    })
+}
+
+pub fn fetch_usage_summary(sub: &str, jwt: &str) -> Result<String, FetchError> {
+    fetch_with_cookies(sub, jwt, |cookie| {
+        get_body(
+            &summary_url(),
+            cookie,
+            "application/json",
+            SUMMARY_TIMEOUT_SECS,
+        )
+    })
+}
+
+fn fetch_with_cookies(
+    sub: &str,
+    jwt: &str,
+    mut get: impl FnMut(&str) -> Result<String, FetchError>,
+) -> Result<String, FetchError> {
     let mut last_auth = false;
     for cookie in cookie_values(sub, jwt) {
-        match get_csv(&url, &cookie) {
+        match get(&cookie) {
             Ok(body) => return Ok(body),
             Err(FetchError::Auth) => {
                 last_auth = true;
@@ -34,12 +56,19 @@ pub fn fetch_usage_csv(sub: &str, jwt: &str) -> Result<String, FetchError> {
 }
 
 fn export_url() -> String {
-    let base = std::env::var("CURSOR_WEB_BASE_URL")
+    format!("{}{EXPORT_PATH}", web_base())
+}
+
+fn summary_url() -> String {
+    format!("{}{SUMMARY_PATH}", web_base())
+}
+
+fn web_base() -> String {
+    std::env::var("CURSOR_WEB_BASE_URL")
         .ok()
         .map(|s| s.trim().trim_end_matches('/').to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_BASE.to_string());
-    format!("{base}{EXPORT_PATH}")
+        .unwrap_or_else(|| DEFAULT_BASE.to_string())
 }
 
 fn cookie_values(sub: &str, jwt: &str) -> Vec<String> {
@@ -65,14 +94,19 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-fn get_csv(url: &str, cookie_value: &str) -> Result<String, FetchError> {
+fn get_body(
+    url: &str,
+    cookie_value: &str,
+    accept: &str,
+    timeout_secs: u64,
+) -> Result<String, FetchError> {
     let resp = ureq::get(url)
         .set("Cookie", &format!("{SESSION_COOKIE}={cookie_value}"))
-        .set("Accept", "text/csv,*/*;q=0.8")
+        .set("Accept", accept)
         .set("Origin", DEFAULT_BASE)
         .set("Referer", "https://cursor.com/dashboard?tab=usage")
         .set("User-Agent", UA)
-        .timeout(Duration::from_secs(TIMEOUT_SECS))
+        .timeout(Duration::from_secs(timeout_secs))
         .call();
     match resp {
         Ok(resp) => resp.into_string().map_err(|_| FetchError::Network),

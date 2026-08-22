@@ -3,160 +3,494 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Usage 采集端</title>
+  <title>AI Usage · 采集端</title>
   <style>
     :root {
-      --bg: #f4f1ea;
-      --card: #fffcf7;
-      --ink: #1c1915;
-      --muted: #6b645b;
-      --line: #e4ddd2;
-      --accent: #2f6f5e;
-      --accent-ink: #f7fffb;
-      --danger: #a33b2b;
-      --ok: #2f6f5e;
+      --bg: #0b0e12;
+      --bg-elev: #12171e;
+      --bg-elev-2: #181e27;
+      --line: #273040;
+      --text: #e7edf5;
+      --muted: #8b97a8;
+      --mint: #3ee0b3;
+      --mint-dim: #1a4f42;
+      --amber: #e8b15a;
+      --rose: #e07a7a;
+      --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+      font-family: "IBM Plex Sans", "Noto Sans CJK SC", "Source Han Sans SC", ui-sans-serif, system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font: 15px/1.5 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", serif;
-      background: var(--bg);
-      color: var(--ink);
-    }
-    main {
-      max-width: 720px;
-      margin: 0 auto;
-      padding: 32px 20px 64px;
-    }
-    h1 { font-size: 1.6rem; font-weight: 600; margin: 0 0 4px; }
-    .lead { color: var(--muted); margin: 0 0 28px; }
-    section {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 20px 22px;
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    button, input, textarea, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    .app { max-width: 1080px; margin: 0 auto; padding: 20px 24px 64px; }
+    .top {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
       margin-bottom: 16px;
     }
-    h2 { font-size: 1.05rem; margin: 0 0 14px; font-weight: 600; }
-    label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
-    input[type="text"], input[type="password"], textarea {
-      width: 100%;
-      padding: 8px 10px;
+    .brand { display: flex; flex-direction: column; gap: 2px; }
+    .brand h1 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+    .brand h1 span { color: var(--mint); }
+    .brand p { margin: 0; color: var(--muted); font-size: 12px; }
+    .nav { display: flex; gap: 6px; }
+    .btn {
       border: 1px solid var(--line);
-      border-radius: 8px;
-      font: inherit;
-      background: #fff;
+      background: var(--bg-elev);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
     }
-    textarea { min-height: 72px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; }
-    .row > div { flex: 1; min-width: 140px; }
-    .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--ink); }
-    button {
-      font: inherit;
-      border: 0;
-      border-radius: 8px;
-      padding: 8px 14px;
-      cursor: pointer;
-      background: var(--accent);
-      color: var(--accent-ink);
+    .btn.primary {
+      border-color: var(--mint);
+      color: var(--mint);
+      background: var(--mint-dim);
     }
-    button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-    button.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
-    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
-    .msg { min-height: 1.4em; margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
-    .msg.err { color: var(--danger); }
-    .msg.ok { color: var(--ok); }
-    ul.list { list-style: none; padding: 0; margin: 0; }
-    ul.list li {
+    .btn.ghost { background: transparent; }
+    .btn.danger {
+      border-color: #5a3030;
+      color: var(--rose);
+      background: transparent;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .kpis-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .kpi {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+    }
+    .kpi .label { color: var(--muted); font-size: 11px; }
+    .kpi .value {
+      font-size: 16px;
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .kpi .value.mint { color: var(--mint); }
+    .kpi .value.amber { color: var(--amber); }
+    .kpi .value.rose { color: var(--rose); }
+    .kpi .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    .card {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .card-head {
       display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .card h2, .card-head h2 {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .plus {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      border: 1px solid var(--mint);
+      background: var(--mint-dim);
+      color: var(--mint);
+      font-size: 22px;
+      line-height: 1;
+      padding: 0;
+    }
+    .acct-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+    }
+    .acct {
+      background: var(--bg-elev-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 176px;
+    }
+    .acct-top { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .acct-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .acct-email {
+      font-size: 14px;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+    .acct-tools { display: flex; gap: 4px; flex-shrink: 0; }
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
+      display: grid;
+      place-items: center;
+    }
+    .icon-btn:hover { color: var(--mint); border-color: var(--mint); }
+    .icon-btn svg { width: 15px; height: 15px; display: block; }
+    .icon-btn.spin svg { animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .json-head {
+      display: flex;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 12px;
-      align-items: center;
-      padding: 10px 0;
-      border-top: 1px solid var(--line);
+      margin-bottom: 12px;
     }
-    ul.list li:first-child { border-top: 0; }
-    .meta { color: var(--muted); font-size: 0.85rem; }
-    .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+    .json-head h3 { margin: 0 0 4px; }
+    .json-head .dlg-lead { margin: 0; }
+    .acct-json {
+      margin: 0;
+      padding: 12px;
+      background: #0b0e12;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow: auto;
+      max-height: min(70vh, 560px);
+      color: var(--text);
+      font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
+      white-space: pre;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
     .chip {
-      font-size: 0.8rem;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
       padding: 2px 8px;
       border-radius: 999px;
-      background: #ece6db;
-      color: var(--ink);
-    }
-    .chip.off { color: var(--muted); background: transparent; border: 1px dashed var(--line); }
-    pre.sync {
-      white-space: pre-wrap;
-      font-size: 0.82rem;
+      font-size: 11px;
       color: var(--muted);
-      margin: 8px 0 0;
+    }
+    .chip.on { border-color: var(--mint); color: var(--mint); background: var(--mint-dim); }
+    .chip.warn { border-color: #5a4630; color: var(--amber); }
+    .chip.bad { border-color: #5a3030; color: var(--rose); }
+    .usage { display: flex; flex-direction: column; gap: 8px; }
+    .usage .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .usage .row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .bar {
+      height: 6px;
+      background: #1c2430;
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .bar > i { display: block; height: 100%; width: 0; background: var(--mint); }
+    .bar.warn > i { background: var(--amber); }
+    .bar.hot > i { background: var(--rose); }
+    .meta { color: var(--muted); font-size: 12px; }
+    .acct-foot {
+      margin-top: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .empty {
+      color: var(--muted);
+      padding: 28px 8px;
+      text-align: center;
+      font-size: 13px;
+      grid-column: 1 / -1;
+    }
+    label.field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%;
+      background: var(--bg-elev-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      color-scheme: dark;
+    }
+    textarea {
+      min-height: 96px;
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      resize: vertical;
+    }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 140px; }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      font-size: 13px;
+    }
+    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    .msg { min-height: 1.2em; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .msg.err { color: var(--rose); }
+    .msg.ok { color: var(--mint); }
+    .err { color: var(--rose); font-size: 13px; margin-bottom: 12px; }
+    .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    dialog {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      max-width: 520px;
+      width: calc(100% - 32px);
+    }
+    dialog.wide { max-width: 760px; }
+    dialog::backdrop { background: rgba(5, 8, 12, 0.72); }
+    .dlg-card {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px 18px 16px;
+      box-shadow: var(--shadow);
+    }
+    .dlg-card h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .dlg-lead { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    .drop {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 10px;
+      min-height: 72px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      background: var(--bg-elev-2);
+      color: var(--muted);
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .drop.over { border-color: var(--mint); color: var(--mint); }
+    .drop input { display: none; }
+    .dlg-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 14px;
+    }
+    .grow { flex: 1; }
+    @media (max-width: 900px) {
+      .kpis-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      .kpis-row { grid-template-columns: 1fr; }
+      .top { flex-direction: column; align-items: flex-start; }
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>采集端</h1>
-    <p class="lead">本机配置。凭证只留在这台机器上，不会上报看板。</p>
-
-    <section>
-      <h2>同步</h2>
-      <div id="tools" class="tools"></div>
-      <pre class="sync" id="last-sync">尚未同步</pre>
-      <div class="actions">
-        <button type="button" id="sync-now">立即同步</button>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <h1>AI <span>Usage</span></h1>
+        <p>采集端 · 凭证只留在这台机器，不会上报看板</p>
       </div>
-      <div class="msg" id="sync-msg"></div>
+      <nav class="nav">
+        <button type="button" class="btn primary" id="sync-now">立即同步</button>
+      </nav>
+    </header>
+    <p class="err" id="page-err" hidden></p>
+    <section class="kpis-row">
+      <div class="kpi">
+        <div class="label">上次同步</div>
+        <div class="value" id="kpi-sync">尚未同步</div>
+        <div class="hint" id="kpi-sync-hint">点击右上角立即拉取</div>
+      </div>
+      <div class="kpi">
+        <div class="label">本机工具</div>
+        <div class="value mint" id="kpi-tools">—</div>
+        <div class="tools" id="tools"></div>
+      </div>
+      <div class="kpi">
+        <div class="label">看板地址</div>
+        <div class="value" id="kpi-url">—</div>
+        <div class="hint" id="kpi-host"></div>
+      </div>
+      <div class="kpi">
+        <div class="label">面板</div>
+        <div class="value" id="kpi-panel">—</div>
+        <div class="hint" id="kpi-token"></div>
+      </div>
     </section>
 
-    <section>
-      <h2>上报</h2>
-      <label for="url">看板地址</label>
+    <section class="card">
+      <div class="card-head">
+        <h2>Cursor 账号</h2>
+        <button type="button" class="plus" id="add-open" title="添加账号" aria-label="添加账号">+</button>
+      </div>
+      <div class="acct-grid" id="accounts"></div>
+      <div class="msg" id="acct-msg"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>上报</h2></div>
+      <label class="field" for="url">看板地址</label>
       <input id="url" type="text" autocomplete="off" />
-      <label for="hostname">主机显示名</label>
+      <label class="field" for="hostname">主机显示名</label>
       <input id="hostname" type="text" autocomplete="off" />
       <div class="row">
         <div>
-          <label for="interval_local">本地工具间隔</label>
+          <label class="field" for="interval_local">本地工具间隔</label>
           <input id="interval_local" type="text" placeholder="5m" />
         </div>
         <div>
-          <label for="interval_cursor">Cursor 间隔</label>
+          <label class="field" for="interval_cursor">Cursor 间隔</label>
           <input id="interval_cursor" type="text" placeholder="30m" />
         </div>
       </div>
       <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
-      <p class="meta" id="bind-line"></p>
       <div class="actions">
-        <button type="button" id="save-cfg">保存配置</button>
+        <button type="button" class="btn primary" id="save-cfg">保存配置</button>
       </div>
       <div class="msg" id="cfg-msg"></div>
+      <div class="msg" id="sync-msg"></div>
     </section>
+  </div>
 
-    <section>
-      <h2>Cursor 账号</h2>
-      <p class="meta">可导入当前 IDE 登录，或粘贴 access token（JWT / WorkosCursorSessionToken）。约 60 天过期，过期后重新导入。当前 IDE 登录会自动采集，不必重复导入。</p>
-      <p class="meta" id="ide-line">IDE 登录：未检测到</p>
-      <ul class="list" id="accounts"></ul>
-      <label for="token">粘贴凭证</label>
-      <textarea id="token" placeholder="eyJ… 或 sub::eyJ…"></textarea>
-      <div class="actions">
-        <button type="button" id="import-ide" class="ghost">导入当前 IDE 登录</button>
-        <button type="button" id="add-token">添加</button>
+  <dialog id="json-dlg" class="wide">
+    <div class="dlg-card">
+      <div class="json-head">
+        <div>
+          <h3 id="json-title">usage-summary</h3>
+          <p class="dlg-lead" id="json-sub">GET /api/usage-summary</p>
+        </div>
+        <button type="button" class="icon-btn" id="json-close" title="关闭" aria-label="关闭"></button>
       </div>
-      <div class="msg" id="acct-msg"></div>
-    </section>
-  </main>
+      <pre class="acct-json" id="json-body"></pre>
+    </div>
+  </dialog>
+
+  <dialog id="add-dlg">
+    <form class="dlg-card" id="add-form">
+      <h3>添加 Cursor 账号</h3>
+      <p class="dlg-lead">粘贴 JWT / WorkosCursorSessionToken，或上传账号导出 JSON（提取 access_token）。</p>
+      <label class="field" for="token">粘贴凭证</label>
+      <textarea id="token" placeholder="eyJ… 或 sub::eyJ… 或 JSON 数组"></textarea>
+      <label class="drop" id="drop">
+        <input id="file" type="file" accept=".json,application/json,text/plain,application/octet-stream" />
+        <span id="file-label">点击或拖放 JSON 文件到这里</span>
+      </label>
+      <div class="dlg-actions">
+        <button type="button" class="btn ghost" id="import-ide">导入当前 IDE 登录</button>
+        <span class="grow"></span>
+        <button type="button" class="btn ghost" id="add-cancel">取消</button>
+        <button type="submit" class="btn primary" id="add-submit">添加</button>
+      </div>
+      <div class="msg" id="dlg-msg"></div>
+    </form>
+  </dialog>
+
   <script>
     const $ = (id) => document.getElementById(id);
+    let fileText = "";
+    let fileName = "";
+    let lastStatus = null;
+    let jsonHash = null;
+    const ICONS = {
+      refresh: [
+        "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",
+        "M21 3v5h-5",
+        "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16",
+        "M8 16H3v5",
+      ],
+      braces: [
+        "M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1",
+        "M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1",
+      ],
+      x: ["M18 6 6 18", "M6 6l12 12"],
+    };
+
     function fmtExp(exp) {
-      if (!exp) return "到期时间未知";
+      if (!exp) return { text: "到期时间未知", kind: "" };
       const ms = exp * 1000 - Date.now();
       const days = Math.floor(ms / 86400000);
-      const d = new Date(exp * 1000);
-      const when = d.toISOString().slice(0, 10);
-      if (ms <= 0) return "已过期 · " + when;
-      return "剩余 " + days + " 天 · " + when;
+      const when = new Date(exp * 1000).toISOString().slice(0, 10);
+      if (ms <= 0) return { text: "已过期 · " + when, kind: "bad" };
+      if (days <= 7) return { text: "剩余 " + days + " 天 · " + when, kind: "warn" };
+      return { text: "剩余 " + days + " 天 · " + when, kind: "" };
+    }
+    function fmtPct(n) {
+      if (n == null || Number.isNaN(n)) return "—";
+      return (Math.round(n * 10) / 10) + "%";
+    }
+    function fmtUsd(cents) {
+      if (cents == null || Number.isNaN(Number(cents))) return null;
+      return "$" + (Number(cents) / 100).toFixed(2);
+    }
+    function usdPair(used, limit) {
+      const a = fmtUsd(used);
+      const b = fmtUsd(limit);
+      if (a && b) return a + " / " + b;
+      return a || b || "";
+    }
+    function meter(label, pct, used, limit) {
+      if (pct == null && used == null && limit == null) return null;
+      const box = el("div", "meter");
+      const row = el("div", "row");
+      row.appendChild(el("span", "", label));
+      const right = [];
+      const money = usdPair(used, limit);
+      if (money) right.push(money);
+      if (pct != null) right.push(fmtPct(pct));
+      row.appendChild(el("b", "", right.join(" · ")));
+      box.appendChild(row);
+      if (pct != null) {
+        const bar = el("div", "bar" + (pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""));
+        const i = el("i");
+        i.style.width = Math.max(0, Math.min(100, pct)) + "%";
+        bar.appendChild(i);
+        box.appendChild(bar);
+      }
+      return box;
     }
     function setMsg(id, text, kind) {
       const el = $(id);
@@ -171,74 +505,282 @@
       if (!res.ok) throw new Error(data.error || res.statusText);
       return data;
     }
+    function el(tag, cls, text) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+    function svgIcon(paths) {
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("fill", "none");
+      svg.setAttribute("stroke", "currentColor");
+      svg.setAttribute("stroke-width", "1.8");
+      svg.setAttribute("stroke-linecap", "round");
+      svg.setAttribute("stroke-linejoin", "round");
+      svg.setAttribute("aria-hidden", "true");
+      paths.forEach((d) => {
+        const p = document.createElementNS(ns, "path");
+        p.setAttribute("d", d);
+        svg.appendChild(p);
+      });
+      return svg;
+    }
+    function iconBtn(name, title) {
+      const btn = el("button", "icon-btn");
+      btn.type = "button";
+      btn.title = title;
+      btn.setAttribute("aria-label", title);
+      btn.appendChild(svgIcon(ICONS[name]));
+      return btn;
+    }
+    function renderAccount(a) {
+      const card = el("article", "acct");
+      const top = el("div", "acct-top");
+      const head = el("div", "acct-head");
+      head.appendChild(el("div", "acct-email", a.account_label || a.account_hash));
+      const tools = el("div", "acct-tools");
+      const refreshBtn = iconBtn("refresh", "刷新套餐用量");
+      refreshBtn.onclick = () => refreshAccount(a.account_hash, refreshBtn);
+      const jsonBtn = iconBtn("braces", "查看原始 JSON");
+      jsonBtn.onclick = () => openJson(a);
+      tools.appendChild(refreshBtn);
+      tools.appendChild(jsonBtn);
+      head.appendChild(tools);
+      top.appendChild(head);
+      const chips = el("div", "chips");
+      if (a.membership) chips.appendChild(el("span", "chip on", a.membership));
+      if (a.subscription_status) {
+        const st = String(a.subscription_status);
+        chips.appendChild(el("span", "chip" + (st === "active" ? " on" : ""), st));
+      }
+      if (a.from_ide) chips.appendChild(el("span", "chip warn", "本机 IDE"));
+      if (a.stored) chips.appendChild(el("span", "chip", "已导入"));
+      top.appendChild(chips);
+      card.appendChild(top);
+
+      const apiMeter = meter("API", a.api_percent, a.plan_used, a.plan_limit);
+      const autoMeter = meter("Auto", a.auto_percent, a.auto_used, a.auto_limit);
+      if (apiMeter || autoMeter || a.billing_cycle_end || a.bonus_cents || a.included_cents) {
+        const box = el("div", "usage");
+        if (apiMeter) box.appendChild(apiMeter);
+        if (autoMeter) box.appendChild(autoMeter);
+        const bits = [];
+        if (a.included_cents != null) bits.push("内含 " + fmtUsd(a.included_cents));
+        if (a.bonus_cents) bits.push("赠额 " + fmtUsd(a.bonus_cents));
+        if (a.billing_cycle_end) bits.push("账期至 " + String(a.billing_cycle_end).slice(0, 10));
+        if (bits.length) box.appendChild(el("div", "meta", bits.join(" · ")));
+        card.appendChild(box);
+      }
+
+      const foot = el("div", "acct-foot");
+      const exp = fmtExp(a.exp);
+      const expEl = el("div", "meta", exp.text);
+      if (exp.kind === "bad") expEl.style.color = "var(--rose)";
+      if (exp.kind === "warn") expEl.style.color = "var(--amber)";
+      foot.appendChild(expEl);
+      const actions = el("div", "chips");
+      if (a.from_ide && !a.stored) {
+        const add = el("button", "btn primary", "加入采集");
+        add.onclick = () => importIde();
+        actions.appendChild(add);
+      }
+      if (a.stored) {
+        const del = el("button", "btn danger", "删除");
+        del.onclick = async () => {
+          if (!confirm("从本机采集列表删除该账号？")) return;
+          try {
+            await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
+            if (jsonHash === a.account_hash) closeJson();
+            setMsg("acct-msg", "已删除", "ok");
+            refresh();
+          } catch (e) { setMsg("acct-msg", e.message, "err"); }
+        };
+        actions.appendChild(del);
+      }
+      foot.appendChild(actions);
+      card.appendChild(foot);
+      return card;
+    }
     function render(s) {
       $("url").value = s.url || "";
       $("hostname").value = s.hostname || "";
       $("interval_local").value = s.interval_local || "";
       $("interval_cursor").value = s.interval_cursor || "";
       $("upload_project").checked = !!s.upload_project;
-      $("bind-line").textContent = "面板 " + (s.panel || "") + " · ingest token " + (s.token_prefix || "");
+      $("kpi-url").textContent = s.url || "未配置";
+      $("kpi-host").textContent = s.hostname ? "主机 " + s.hostname : "";
+      $("kpi-panel").textContent = s.panel || "";
+      $("kpi-token").textContent = "ingest " + (s.token_prefix || "");
       const tools = $("tools");
       tools.innerHTML = "";
+      const found = (s.tools || []).filter((t) => t.found).length;
+      const total = (s.tools || []).length;
+      $("kpi-tools").textContent = found + " / " + total;
       (s.tools || []).forEach((t) => {
-        const span = document.createElement("span");
-        span.className = "chip" + (t.found ? "" : " off");
-        span.textContent = t.found ? t.id : t.id + " 未发现";
+        const span = el("span", "chip" + (t.found ? " on" : ""), t.found ? t.id : t.id + " 未发现");
         tools.appendChild(span);
       });
       const ls = s.last_sync;
+      const syncVal = $("kpi-sync");
+      const syncHint = $("kpi-sync-hint");
       if (!ls) {
-        $("last-sync").textContent = "尚未同步";
+        syncVal.textContent = "尚未同步";
+        syncVal.className = "value";
+        syncHint.textContent = "点击右上角立即拉取";
       } else {
-        const lines = [];
-        lines.push((ls.at || "") + (ls.error ? " · 失败" : " · 完成"));
-        if (ls.error) lines.push(ls.error);
-        (ls.parser_lines || []).forEach((x) => lines.push(x));
-        (ls.warnings || []).forEach((x) => lines.push(x));
-        if (!ls.error) lines.push("上报 " + (ls.ingested || 0) + " buckets · " + (ls.sessions || 0) + " sessions");
-        $("last-sync").textContent = lines.join("\n");
+        const when = (ls.at || "").replace("T", " ").slice(0, 19);
+        if (ls.error) {
+          syncVal.textContent = "失败";
+          syncVal.className = "value rose";
+          syncHint.textContent = ls.error;
+        } else {
+          syncVal.textContent = "完成";
+          syncVal.className = "value mint";
+          const extra = (ls.parser_lines || []).join(" · ");
+          syncHint.textContent = when + (extra ? " · " + extra : "") +
+            " · 上报 " + (ls.ingested || 0) + " buckets";
+        }
       }
-      if (s.ide_cursor) {
-        $("ide-line").textContent = "IDE 登录：" + s.ide_cursor.account_label + " · " + fmtExp(s.ide_cursor.exp);
+      paintAccounts(s);
+    }
+    function paintAccounts(s) {
+      const grid = $("accounts");
+      grid.innerHTML = "";
+      const list = s.cursor_accounts || [];
+      if (!list.length) {
+        grid.appendChild(el("div", "empty", "尚未挂 Cursor 账号。点右上角 + 粘贴凭证或上传 JSON。"));
       } else {
-        $("ide-line").textContent = "IDE 登录：未检测到";
+        list.forEach((a) => grid.appendChild(renderAccount(a)));
       }
-      const ul = $("accounts");
-      ul.innerHTML = "";
-      (s.cursor_accounts || []).forEach((a) => {
-        const li = document.createElement("li");
-        const left = document.createElement("div");
-        const name = document.createElement("strong");
-        name.textContent = a.account_label;
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        meta.textContent = fmtExp(a.exp);
-        left.appendChild(name);
-        left.appendChild(meta);
-        const btn = document.createElement("button");
-        btn.className = "danger";
-        btn.textContent = "删除";
-        btn.onclick = async () => {
-          try {
-            await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
-            setMsg("acct-msg", "已删除", "ok");
-            refresh();
-          } catch (e) { setMsg("acct-msg", e.message, "err"); }
-        };
-        li.appendChild(left);
-        li.appendChild(btn);
-        ul.appendChild(li);
-      });
-      if (!(s.cursor_accounts || []).length) {
-        const li = document.createElement("li");
-        li.innerHTML = "<span class='meta'>尚未挂额外账号</span>";
-        ul.appendChild(li);
+      if (jsonHash && $("json-dlg").open) {
+        const a = list.find((x) => x.account_hash === jsonHash);
+        if (a) fillJson(a);
+        else closeJson();
       }
     }
     async function refresh() {
       const s = await api("/v1/status");
+      lastStatus = s;
       render(s);
     }
+    async function refreshAccount(hash, btn) {
+      btn.disabled = true;
+      btn.classList.add("spin");
+      try {
+        await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/refresh", { method: "POST" });
+        await refresh();
+      } catch (e) {
+        setMsg("acct-msg", e.message, "err");
+        btn.disabled = false;
+        btn.classList.remove("spin");
+      }
+    }
+    function fillJson(a) {
+      $("json-title").textContent = a.account_label || a.account_hash;
+      $("json-sub").textContent = "GET /api/usage-summary";
+      $("json-body").textContent = a.usage_raw
+        ? JSON.stringify(a.usage_raw, null, 2)
+        : "尚未拉到 usage-summary。点刷新后再看。";
+    }
+    function openJson(a) {
+      jsonHash = a.account_hash;
+      fillJson(a);
+      $("json-dlg").showModal();
+    }
+    function closeJson() {
+      jsonHash = null;
+      if ($("json-dlg").open) $("json-dlg").close();
+    }
+    function closeDlg() {
+      $("add-dlg").close();
+      $("token").value = "";
+      $("file").value = "";
+      fileText = "";
+      fileName = "";
+      $("file-label").textContent = "点击或拖放 JSON 文件到这里";
+      setMsg("dlg-msg", "");
+    }
+    function openDlg() {
+      setMsg("dlg-msg", "");
+      $("add-dlg").showModal();
+      $("token").focus();
+    }
+    async function importIde() {
+      try {
+        const r = await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ import_ide: true }) });
+        setMsg("acct-msg", "已导入当前 IDE 登录", "ok");
+        closeDlg();
+        refresh();
+        return r;
+      } catch (e) {
+        setMsg("dlg-msg", e.message, "err");
+        setMsg("acct-msg", e.message, "err");
+      }
+    }
+    function payloadText() {
+      const pasted = $("token").value.trim();
+      if (fileText) return fileText;
+      return pasted;
+    }
+    $("json-close").appendChild(svgIcon(ICONS.x));
+    $("json-close").onclick = closeJson;
+    $("json-dlg").addEventListener("click", (e) => {
+      if (e.target === $("json-dlg")) closeJson();
+    });
+    $("json-dlg").addEventListener("close", () => { jsonHash = null; });
+    $("add-open").onclick = openDlg;
+    $("add-cancel").onclick = (e) => { e.preventDefault(); closeDlg(); };
+    $("add-dlg").addEventListener("click", (e) => {
+      if (e.target === $("add-dlg")) closeDlg();
+    });
+    $("import-ide").onclick = (e) => { e.preventDefault(); importIde(); };
+    $("add-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const token = payloadText();
+      if (!token) {
+        setMsg("dlg-msg", "请粘贴凭证或选择文件", "err");
+        return;
+      }
+      $("add-submit").disabled = true;
+      try {
+        const r = await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ token }) });
+        const n = r.added || 0;
+        setMsg("acct-msg", n ? ("已导入 " + n + " 个账号") : "已添加", "ok");
+        closeDlg();
+        refresh();
+      } catch (err) {
+        setMsg("dlg-msg", err.message, "err");
+      } finally {
+        $("add-submit").disabled = false;
+      }
+    };
+    function takeFile(file) {
+      if (!file) return;
+      fileName = file.name || "upload.json";
+      const reader = new FileReader();
+      reader.onload = () => {
+        fileText = String(reader.result || "");
+        $("file-label").textContent = fileName + " · " + fileText.length + " 字节";
+        setMsg("dlg-msg", "已读取文件，点添加以提取凭证", "ok");
+      };
+      reader.onerror = () => setMsg("dlg-msg", "读取文件失败", "err");
+      reader.readAsText(file);
+    }
+    $("file").onchange = () => takeFile($("file").files && $("file").files[0]);
+    const drop = $("drop");
+    ["dragenter", "dragover"].forEach((ev) => {
+      drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); });
+    });
+    ["dragleave", "drop"].forEach((ev) => {
+      drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); });
+    });
+    drop.addEventListener("drop", (e) => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      takeFile(f);
+    });
     $("save-cfg").onclick = async () => {
       try {
         await api("/v1/config", {
@@ -263,22 +805,10 @@
         setTimeout(refresh, 800);
       } catch (e) { setMsg("sync-msg", e.message, "err"); }
     };
-    $("import-ide").onclick = async () => {
-      try {
-        await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ import_ide: true }) });
-        setMsg("acct-msg", "已导入当前 IDE 登录", "ok");
-        refresh();
-      } catch (e) { setMsg("acct-msg", e.message, "err"); }
-    };
-    $("add-token").onclick = async () => {
-      try {
-        await api("/v1/cursor/accounts", { method: "POST", body: JSON.stringify({ token: $("token").value }) });
-        $("token").value = "";
-        setMsg("acct-msg", "已添加", "ok");
-        refresh();
-      } catch (e) { setMsg("acct-msg", e.message, "err"); }
-    };
-    refresh().catch((e) => setMsg("sync-msg", e.message, "err"));
+    refresh().catch((e) => {
+      $("page-err").hidden = false;
+      $("page-err").textContent = e.message;
+    });
     setInterval(() => refresh().catch(() => {}), 8000);
   </script>
 </body>

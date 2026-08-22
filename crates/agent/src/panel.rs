@@ -1,28 +1,41 @@
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use ai_usage_parsers::{read_ide_cursor_auth, AdapterEnv, ParseCtx};
+use ai_usage_parsers::{
+    fetch_plan_with_raw, read_ide_cursor_auth, AdapterEnv, CursorAccountSnapshot,
+    CursorTokenPreview, ParseCtx,
+};
 
 use crate::config::AgentConfig;
-use crate::cursor_accounts::{self, AccountView};
+use crate::cursor_accounts::{self, AccountView, CursorAccountsFile};
 use crate::sync::SyncReport;
 
 const HTML: &str = include_str!("panel.html");
-const MAX_BODY: usize = 64 * 1024;
+const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_HEADERS: usize = 8 * 1024;
+const PLAN_TTL: Duration = Duration::from_secs(90);
 
 pub struct PanelState {
     pub config_path: PathBuf,
     pub data_dir: PathBuf,
     inner: Mutex<Inner>,
     wake: Condvar,
+    usage_cache: Mutex<HashMap<String, CachedPlan>>,
+}
+
+#[derive(Clone)]
+struct CachedPlan {
+    at: Instant,
+    snapshot: CursorAccountSnapshot,
+    raw: serde_json::Value,
 }
 
 struct Inner {
@@ -76,6 +89,7 @@ impl PanelState {
                 sync_requested: false,
             }),
             wake: Condvar::new(),
+            usage_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -87,6 +101,42 @@ impl PanelState {
         let mut g = self.inner.lock().expect("panel state");
         g.sync_requested = true;
         self.wake.notify_all();
+        drop(g);
+        self.usage_cache.lock().expect("usage cache").clear();
+    }
+
+    fn plan_entry(&self, hash: &str, token: &str, force: bool) -> Option<CachedPlan> {
+        if cfg!(test) {
+            return None;
+        }
+        if !force {
+            let cache = self.usage_cache.lock().expect("usage cache");
+            if let Some(cached) = cache.get(hash) {
+                if cached.at.elapsed() < PLAN_TTL {
+                    return Some(cached.clone());
+                }
+            }
+        }
+        match fetch_plan_with_raw(token) {
+            Some((snapshot, raw)) => {
+                let entry = CachedPlan {
+                    at: Instant::now(),
+                    snapshot,
+                    raw,
+                };
+                self.usage_cache
+                    .lock()
+                    .expect("usage cache")
+                    .insert(hash.to_string(), entry.clone());
+                Some(entry)
+            }
+            None => self
+                .usage_cache
+                .lock()
+                .expect("usage cache")
+                .get(hash)
+                .cloned(),
+        }
     }
 
     pub fn take_sync_request(&self) -> bool {
@@ -237,14 +287,24 @@ fn dispatch(
             json_status(202, serde_json::json!({"ok": true}))
         }
         ("POST", "/v1/cursor/accounts") => match post_account(state, body) {
-            Ok(()) => json_ok(serde_json::json!({"ok": true})),
+            Ok(v) => json_ok(v),
             Err(err) => json_err(400, &err.to_string()),
         },
+        (m, p) if m == "POST" && refresh_account_hash(p).is_some() => {
+            let hash = refresh_account_hash(p).expect("matched");
+            match refresh_account_plan(state, &hash) {
+                Ok(()) => json_ok(serde_json::json!({"ok": true})),
+                Err(err) => json_err(404, &err.to_string()),
+            }
+        }
         (m, p) if m == "DELETE" && p.starts_with("/v1/cursor/accounts/") => {
             let hash = p.trim_start_matches("/v1/cursor/accounts/");
             let hash = percent_decode(hash);
             match cursor_accounts::remove(&state.data_dir, &hash) {
-                Ok(true) => json_ok(serde_json::json!({"ok": true})),
+                Ok(true) => {
+                    state.usage_cache.lock().expect("usage cache").remove(&hash);
+                    json_ok(serde_json::json!({"ok": true}))
+                }
                 Ok(false) => json_err(404, "账号不存在"),
                 Err(err) => json_err(400, &err.to_string()),
             }
@@ -294,21 +354,34 @@ fn put_config(state: &PanelState, body: &[u8]) -> Result<()> {
 #[derive(Deserialize)]
 struct AddAccount {
     #[serde(default)]
-    token: String,
+    token: serde_json::Value,
     #[serde(default)]
     import_ide: bool,
 }
 
-fn post_account(state: &PanelState, body: &[u8]) -> Result<()> {
+fn post_account(state: &PanelState, body: &[u8]) -> Result<serde_json::Value> {
     let req: AddAccount = serde_json::from_slice(body).context("JSON")?;
     if req.import_ide {
         let preview = read_ide_cursor_auth(&parse_ctx(&state.data_dir))
             .ok_or_else(|| anyhow::anyhow!("未检测到 Cursor IDE 登录"))?;
         cursor_accounts::upsert(&state.data_dir, &preview)?;
-        return Ok(());
+        return Ok(serde_json::json!({
+            "ok": true,
+            "added": 1,
+            "labels": [preview.account_label],
+        }));
     }
-    cursor_accounts::add_from_raw(&state.data_dir, &req.token)?;
-    Ok(())
+    let raw = match &req.token {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let added = cursor_accounts::add_from_raw(&state.data_dir, &raw)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "added": added.len(),
+        "labels": added.iter().map(|a| a.account_label.clone()).collect::<Vec<_>>(),
+    }))
 }
 
 fn parse_ctx(data_dir: &std::path::Path) -> ParseCtx {
@@ -335,7 +408,6 @@ struct StatusPayload {
     token_prefix: String,
     tools: Vec<ToolView>,
     cursor_accounts: Vec<AccountView>,
-    ide_cursor: Option<AccountView>,
     last_sync: Option<LastSyncView>,
 }
 
@@ -356,11 +428,7 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         })
         .collect();
     let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
-    let ide = read_ide_cursor_auth(&ctx).map(|p| AccountView {
-        account_hash: p.account_hash,
-        account_label: p.account_label,
-        exp: p.exp,
-    });
+    let ide = read_ide_cursor_auth(&ctx);
     let last_sync = state.inner.lock().expect("panel state").last_sync.clone();
     let payload = StatusPayload {
         url: cfg.url.clone(),
@@ -372,11 +440,111 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         panel: format!("http://{}", cfg.bind),
         token_prefix: format!("{}…", cfg.token.chars().take(12).collect::<String>()),
         tools,
-        cursor_accounts: cursor_accounts::public_views(&extras),
-        ide_cursor: ide,
+        cursor_accounts: {
+            let mut views = merge_account_views(&extras, ide.as_ref());
+            apply_live_plan(state, &mut views, &extras, ide.as_ref());
+            views
+        },
         last_sync,
     };
     serde_json::to_value(payload).unwrap_or(serde_json::json!({}))
+}
+
+fn merge_account_views(
+    extras: &CursorAccountsFile,
+    ide: Option<&CursorTokenPreview>,
+) -> Vec<AccountView> {
+    let mut views = cursor_accounts::public_views(extras);
+    if let Some(ide) = ide {
+        if let Some(existing) = views
+            .iter_mut()
+            .find(|a| a.account_hash == ide.account_hash)
+        {
+            existing.from_ide = true;
+            if ide.account_label.contains('@') {
+                existing.account_label = ide.account_label.clone();
+            }
+        } else {
+            views.insert(0, AccountView::from_preview(ide, true, false));
+        }
+    }
+    views
+}
+
+fn refresh_account_hash(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1/cursor/accounts/")?;
+    let hash = rest.strip_suffix("/refresh")?;
+    if hash.is_empty() || hash.contains('/') {
+        return None;
+    }
+    Some(percent_decode(hash))
+}
+
+fn refresh_account_plan(state: &PanelState, hash: &str) -> Result<()> {
+    let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
+    let ide = read_ide_cursor_auth(&parse_ctx(&state.data_dir));
+    let token =
+        account_token(&extras, ide.as_ref(), hash).ok_or_else(|| anyhow::anyhow!("账号不存在"))?;
+    state.usage_cache.lock().expect("usage cache").remove(hash);
+    let _ = state.plan_entry(hash, &token, true);
+    Ok(())
+}
+
+fn account_token(
+    extras: &CursorAccountsFile,
+    ide: Option<&CursorTokenPreview>,
+    hash: &str,
+) -> Option<String> {
+    if let Some(ide) = ide {
+        if ide.account_hash == hash {
+            return Some(ide.access_token.clone());
+        }
+    }
+    extras
+        .accounts
+        .iter()
+        .find(|a| a.account_hash == hash)
+        .map(|a| a.access_token.clone())
+}
+
+fn apply_live_plan(
+    state: &PanelState,
+    views: &mut [AccountView],
+    extras: &CursorAccountsFile,
+    ide: Option<&CursorTokenPreview>,
+) {
+    if cfg!(test) || views.is_empty() {
+        return;
+    }
+    let mut tokens: Vec<(String, String)> = Vec::new();
+    if let Some(ide) = ide {
+        tokens.push((ide.account_hash.clone(), ide.access_token.clone()));
+    }
+    for a in &extras.accounts {
+        if !tokens.iter().any(|(h, _)| h == &a.account_hash) {
+            tokens.push((a.account_hash.clone(), a.access_token.clone()));
+        }
+    }
+    let snaps: Vec<(String, Option<CachedPlan>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = tokens
+            .iter()
+            .map(|(hash, token)| {
+                scope.spawn(|| (hash.clone(), state.plan_entry(hash, token, false)))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("plan fetch"))
+            .collect()
+    });
+    for (hash, entry) in snaps {
+        if let Some(view) = views.iter_mut().find(|a| a.account_hash == hash) {
+            if let Some(entry) = entry {
+                view.snapshot = entry.snapshot;
+                view.usage_raw = Some(entry.raw);
+            }
+        }
+    }
 }
 
 fn percent_decode(s: &str) -> String {
@@ -468,10 +636,74 @@ mod tests {
     }
 
     #[test]
+    fn add_accounts_from_json_dump() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let dump = serde_json::json!([{
+            "email": "t@e.com",
+            "access_token": jwt,
+            "membership_type": "pro",
+            "cursor_usage_raw": {
+                "autoModelSelectedDisplayMessage": "You've used 14% of your included total usage",
+                "individualUsage": { "plan": { "used": 200, "limit": 2000, "totalPercentUsed": 14.0 } }
+            }
+        }]);
+        let body = serde_json::json!({ "token": dump.to_string() });
+        let (st, _, out) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["added"], 1);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let accts = status["cursor_accounts"].as_array().unwrap();
+        let acct = accts
+            .iter()
+            .find(|a| a["account_label"] == "t@e.com")
+            .expect("imported dump account");
+        assert_eq!(acct["stored"], true);
+        assert!(acct.get("membership").is_none() || acct["membership"].is_null());
+        assert!(!status.to_string().contains("access_token"));
+    }
+
+    #[test]
     fn sync_sets_flag() {
         let (_dir, state) = setup();
         let (st, _, _) = dispatch(&state, "POST", "/v1/sync", b"{}");
         assert_eq!(st, 202);
         assert!(state.take_sync_request());
+    }
+
+    #[test]
+    fn refresh_unknown_account_is_404() {
+        let (_dir, state) = setup();
+        let (st, _, _) = dispatch(&state, "POST", "/v1/cursor/accounts/nope/refresh", b"");
+        assert_eq!(st, 404);
+    }
+
+    #[test]
+    fn refresh_stored_account_ok() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let hash = status["cursor_accounts"][0]["account_hash"]
+            .as_str()
+            .unwrap();
+        let path = format!("/v1/cursor/accounts/{hash}/refresh");
+        let (st, _, out) = dispatch(&state, "POST", &path, b"");
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
     }
 }

@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use ai_usage_parsers::{preview_cursor_token, CursorExtraAccount, CursorTokenPreview};
+use ai_usage_parsers::{
+    extract_cursor_previews, preview_cursor_token, CursorAccountSnapshot, CursorExtraAccount,
+    CursorTokenPreview,
+};
 
 const FILE: &str = "cursor-accounts.toml";
 
@@ -18,6 +21,8 @@ pub struct StoredAccount {
     pub account_hash: String,
     pub account_label: String,
     pub access_token: String,
+    #[serde(flatten, default)]
+    pub snapshot: CursorAccountSnapshot,
 }
 
 pub fn path(data_dir: &Path) -> PathBuf {
@@ -59,6 +64,7 @@ pub fn upsert(data_dir: &Path, preview: &CursorTokenPreview) -> Result<StoredAcc
         account_hash: preview.account_hash.clone(),
         account_label: preview.account_label.clone(),
         access_token: preview.access_token.clone(),
+        snapshot: CursorAccountSnapshot::default(),
     };
     if let Some(existing) = file
         .accounts
@@ -73,10 +79,16 @@ pub fn upsert(data_dir: &Path, preview: &CursorTokenPreview) -> Result<StoredAcc
     Ok(stored)
 }
 
-pub fn add_from_raw(data_dir: &Path, raw: &str) -> Result<StoredAccount> {
-    let preview =
-        preview_cursor_token(raw).ok_or_else(|| anyhow::anyhow!("无法解析 Cursor access token"))?;
-    upsert(data_dir, &preview)
+pub fn add_from_raw(data_dir: &Path, raw: &str) -> Result<Vec<StoredAccount>> {
+    let found = extract_cursor_previews(raw);
+    if found.is_empty() {
+        anyhow::bail!("无法从粘贴内容或文件中解析 Cursor 凭证");
+    }
+    let mut out = Vec::new();
+    for preview in found {
+        out.push(upsert(data_dir, &preview)?);
+    }
+    Ok(out)
 }
 
 pub fn remove(data_dir: &Path, hash: &str) -> Result<bool> {
@@ -109,6 +121,10 @@ pub fn public_views(file: &CursorAccountsFile) -> Vec<AccountView> {
                 account_hash: a.account_hash.clone(),
                 account_label: a.account_label.clone(),
                 exp,
+                from_ide: false,
+                stored: true,
+                snapshot: CursorAccountSnapshot::default(),
+                usage_raw: None,
             }
         })
         .collect()
@@ -119,6 +135,26 @@ pub struct AccountView {
     pub account_hash: String,
     pub account_label: String,
     pub exp: Option<i64>,
+    pub from_ide: bool,
+    pub stored: bool,
+    #[serde(flatten)]
+    pub snapshot: CursorAccountSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_raw: Option<serde_json::Value>,
+}
+
+impl AccountView {
+    pub fn from_preview(preview: &CursorTokenPreview, from_ide: bool, stored: bool) -> Self {
+        Self {
+            account_hash: preview.account_hash.clone(),
+            account_label: preview.account_label.clone(),
+            exp: preview.exp,
+            from_ide,
+            stored,
+            snapshot: preview.snapshot.clone(),
+            usage_raw: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,7 +172,7 @@ mod tests {
         let jwt = sample_jwt();
         let first = add_from_raw(dir.path(), &jwt).unwrap();
         let second = add_from_raw(dir.path(), &jwt).unwrap();
-        assert_eq!(first.account_hash, second.account_hash);
+        assert_eq!(first[0].account_hash, second[0].account_hash);
         let file = load(dir.path()).unwrap();
         assert_eq!(file.accounts.len(), 1);
         assert_eq!(file.accounts[0].account_label, "t@e.com");
@@ -146,7 +182,32 @@ mod tests {
     fn remove_account() {
         let dir = tempfile::tempdir().unwrap();
         let stored = add_from_raw(dir.path(), &sample_jwt()).unwrap();
-        assert!(remove(dir.path(), &stored.account_hash).unwrap());
+        assert!(remove(dir.path(), &stored[0].account_hash).unwrap());
         assert!(load(dir.path()).unwrap().accounts.is_empty());
+    }
+
+    #[test]
+    fn json_dump_adds_two_tokens_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = sample_jwt();
+        let b = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3UiLCJlbWFpbCI6InVAZS5jb20ifQ.sig";
+        let dump = serde_json::json!([
+            {
+                "email": "t@e.com",
+                "access_token": a,
+                "membership_type": "pro",
+                "cursor_usage_raw": {
+                    "individualUsage": { "plan": { "used": 10, "limit": 100, "totalPercentUsed": 12.5 } }
+                }
+            },
+            { "access_token": b }
+        ]);
+        let added = add_from_raw(dir.path(), &dump.to_string()).unwrap();
+        assert_eq!(added.len(), 2);
+        let file = load(dir.path()).unwrap();
+        assert_eq!(file.accounts.len(), 2);
+        assert_eq!(file.accounts[0].access_token, a);
+        assert!(file.accounts[0].snapshot.is_empty());
+        assert_eq!(file.accounts[0].account_label, "t@e.com");
     }
 }

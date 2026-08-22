@@ -6,6 +6,7 @@
 //! the agent secrets file, not from a second IDE login.
 
 mod csv;
+mod extract;
 mod jwt;
 mod local;
 mod paths;
@@ -30,12 +31,15 @@ const EXTRA_BAD_HINT: &str = "Cursor: 额外凭证无法解析，请重新导入
 const EXTRA_EXPIRED: &str = "会话已过期，请重新导入。";
 const CONFIGURED_ACCOUNTS: &str = "cursor-accounts";
 
+pub use extract::{extract_cursor_previews, snapshot_from_usage_json, CursorAccountSnapshot};
+
 #[derive(Debug, Clone)]
 pub struct CursorTokenPreview {
     pub access_token: String,
     pub account_hash: String,
     pub account_label: String,
     pub exp: Option<i64>,
+    pub snapshot: CursorAccountSnapshot,
 }
 
 /// Accept a raw JWT or a `WorkosCursorSessionToken` value (`sub::jwt`).
@@ -46,10 +50,18 @@ pub fn extract_cursor_jwt(raw: &str) -> Option<String> {
     }
     let jwt = split_session_cookie(raw).unwrap_or(raw);
     let jwt = jwt.trim();
-    if jwt.split('.').count() < 3 {
+    if !is_jwt_shape(jwt) {
         return None;
     }
     Some(jwt.to_string())
+}
+
+fn is_jwt_shape(jwt: &str) -> bool {
+    let mut parts = jwt.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(a), Some(b), Some(c), None) if !a.is_empty() && !b.is_empty() && !c.is_empty()
+    )
 }
 
 fn split_session_cookie(raw: &str) -> Option<&str> {
@@ -70,6 +82,7 @@ pub fn preview_cursor_token(raw: &str) -> Option<CursorTokenPreview> {
         account_hash,
         account_label,
         exp: claims.exp,
+        snapshot: CursorAccountSnapshot::default(),
     })
 }
 
@@ -81,6 +94,22 @@ pub fn read_ide_cursor_auth(ctx: &ParseCtx) -> Option<CursorTokenPreview> {
         preview.account_label = auth.cached_email;
     }
     Some(preview)
+}
+
+/// Live plan meter from `GET /api/usage-summary`. None = network/auth/parse failed.
+pub fn fetch_plan_snapshot(access_token: &str) -> Option<CursorAccountSnapshot> {
+    fetch_plan_with_raw(access_token).map(|(snap, _)| snap)
+}
+
+/// Same as [`fetch_plan_snapshot`], plus the parsed `usage-summary` body.
+pub fn fetch_plan_with_raw(
+    access_token: &str,
+) -> Option<(CursorAccountSnapshot, serde_json::Value)> {
+    let jwt = extract_cursor_jwt(access_token)?;
+    let claims = jwt::decode_claims(&jwt)?;
+    let raw = remote::fetch_usage_summary(&claims.sub, &jwt).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some((snapshot_from_usage_json(&v), v))
 }
 
 impl UsageAdapter for CursorAdapter {
