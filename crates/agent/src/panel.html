@@ -22,7 +22,12 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
     button, input, textarea, select { font: inherit; color: inherit; }
-    button { cursor: pointer; }
+    button {
+      cursor: pointer;
+      transition: background 40ms ease-out, border-color 40ms ease-out, color 40ms ease-out,
+        transform 50ms ease-out, box-shadow 40ms ease-out, opacity 40ms ease-out;
+    }
+    button:disabled { cursor: not-allowed; }
     .app { max-width: 1080px; margin: 0 auto; padding: 16px 24px 56px; }
     .top {
       display: flex;
@@ -56,16 +61,39 @@
       border-radius: 999px;
       font-size: 12px;
     }
+    .btn:hover:not(:disabled) {
+      border-color: #3d4b5e;
+      background: #1c2430;
+      color: var(--text);
+    }
     .btn.primary {
       border-color: var(--mint);
       color: var(--mint);
       background: var(--mint-dim);
     }
+    .btn.primary:hover:not(:disabled) {
+      border-color: var(--mint);
+      background: #226355;
+      color: #7aecd0;
+    }
     .btn.ghost { background: transparent; }
+    .btn.ghost:hover:not(:disabled) {
+      background: #1c2430;
+      border-color: #3d4b5e;
+    }
     .btn.danger {
       border-color: #5a3030;
       color: var(--rose);
       background: transparent;
+    }
+    .btn.danger:hover:not(:disabled) {
+      border-color: var(--rose);
+      background: #3a2222;
+      color: #f09a9a;
+    }
+    .btn.primary:active:not(:disabled),
+    .btn.danger:active:not(:disabled) {
+      transform: scale(0.96);
     }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .kpis-row {
@@ -181,6 +209,14 @@
       display: grid;
       place-items: center;
     }
+    .plus:hover:not(:disabled) {
+      background: #226355;
+      color: #7aecd0;
+      box-shadow: 0 0 0 3px rgba(62, 224, 179, 0.16);
+    }
+    .plus:active:not(:disabled) {
+      box-shadow: none;
+    }
     .plus svg { width: 16px; height: 16px; display: block; }
     .acct-grid {
       display: grid;
@@ -227,7 +263,14 @@
       display: grid;
       place-items: center;
     }
-    .icon-btn:hover { color: var(--mint); border-color: var(--mint); }
+    .icon-btn:hover:not(:disabled) {
+      color: var(--mint);
+      border-color: var(--mint);
+      background: #1c2430;
+    }
+    .icon-btn:active:not(:disabled) {
+      background: #161c24;
+    }
     .icon-btn svg { width: 15px; height: 15px; display: block; }
     .icon-btn.spin svg { animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -389,6 +432,16 @@
       color: var(--muted);
       font-size: 12px;
       cursor: pointer;
+      transition: background 40ms ease-out, border-color 40ms ease-out, color 40ms ease-out;
+    }
+    .drop:hover {
+      border-color: #3d4b5e;
+      background: #1c2430;
+      color: var(--text);
+    }
+    .drop:active {
+      border-color: var(--mint);
+      color: var(--mint);
     }
     .drop.over { border-color: var(--mint); color: var(--mint); }
     .drop input { display: none; }

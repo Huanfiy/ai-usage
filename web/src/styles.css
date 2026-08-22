@@ -16,7 +16,12 @@
 * { box-sizing: border-box; }
 html, body, #app { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
 button, select, input { font: inherit; color: inherit; }
-button { cursor: pointer; }
+button {
+  cursor: pointer;
+  transition: background 40ms ease-out, border-color 40ms ease-out, color 40ms ease-out,
+    transform 50ms ease-out, box-shadow 40ms ease-out, opacity 40ms ease-out, filter 40ms ease-out;
+}
+button:disabled { cursor: not-allowed; }
 
 .app {
   max-width: 1280px;
@@ -46,6 +51,8 @@ button { cursor: pointer; }
   gap: 6px;
 }
 .nav a {
+  display: inline-flex;
+  align-items: center;
   text-decoration: none;
   border: 1px solid var(--line);
   background: var(--bg-elev);
@@ -53,11 +60,22 @@ button { cursor: pointer; }
   padding: 6px 12px;
   border-radius: 999px;
   font-size: 12px;
+  transition: background 40ms ease-out, border-color 40ms ease-out, color 40ms ease-out,
+    box-shadow 40ms ease-out;
+}
+.nav a:hover {
+  color: var(--text);
+  border-color: #3d4b5e;
+  background: #1c2430;
 }
 .nav a.active {
   border-color: var(--mint);
   color: var(--mint);
   background: var(--mint-dim);
+}
+.nav a.active:hover {
+  background: #226355;
+  color: #7aecd0;
 }
 
 .chip {
@@ -71,6 +89,14 @@ button { cursor: pointer; }
   border-color: var(--mint);
   color: var(--mint);
   background: var(--mint-dim);
+}
+button.chip:hover:not(:disabled) {
+  border-color: #3d4b5e;
+  background: #1c2430;
+  color: var(--text);
+}
+button.chip:active:not(:disabled) {
+  background: #161c24;
 }
 
 .toolbar {
@@ -124,6 +150,14 @@ input:not([type]) {
   border-radius: 999px;
   background: var(--bg-elev-2);
   padding: 0;
+}
+.switch:hover {
+  border-color: #3d4b5e;
+  background: #1c2430;
+}
+.switch.on:hover {
+  border-color: var(--mint);
+  background: #226355;
 }
 .switch i {
   position: absolute;
@@ -222,7 +256,15 @@ input:not([type]) {
   padding: 4px 10px;
   font-size: 12px;
 }
+.tabs button:hover:not(.active) {
+  color: var(--text);
+  border-color: #3d4b5e;
+  background: #1c2430;
+}
 .tabs button.active { border-color: var(--amber); color: var(--amber); }
+.tabs button.active:hover {
+  background: rgba(232, 177, 90, 0.12);
+}
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); }
@@ -278,10 +320,23 @@ td { padding: 8px; border-bottom: 1px solid #1c2430; font-variant-numeric: tabul
   font-size: 12px;
   color: var(--text);
 }
+.pager-btns button:hover:not(:disabled):not(.active) {
+  border-color: #3d4b5e;
+  background: #1c2430;
+}
 .pager-btns button.active {
   background: #fff;
   color: #111;
   border-color: #fff;
+}
+.pager-btns button.active:hover:not(:disabled) {
+  background: #f3f6fa;
+}
+.pager-btns button:active:not(:disabled):not(.active) {
+  background: #161c24;
+}
+.pager-btns button.active:active:not(:disabled) {
+  background: #d8dee6;
 }
 .pager-btns button:disabled {
   opacity: 0.4;

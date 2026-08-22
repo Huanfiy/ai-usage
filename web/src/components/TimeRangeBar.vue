@@ -407,14 +407,22 @@ onUnmounted(() => {
   font-size: 13px;
   white-space: nowrap;
   line-height: 1.2;
+  transition: background 40ms ease-out, color 40ms ease-out;
 }
 .seg button:hover {
   color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
 }
 .seg button.active {
   background: #fff;
   color: #111;
   font-weight: 600;
+}
+.seg button.active:hover {
+  background: #f3f6fa;
+}
+.seg button.active:active {
+  background: #d8dee6;
 }
 .custom-panel {
   position: absolute;
@@ -454,6 +462,7 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
   cursor: pointer;
+  transition: background 40ms ease-out, border-color 40ms ease-out;
 }
 .date-text {
   white-space: nowrap;
@@ -493,7 +502,7 @@ onUnmounted(() => {
   color: #111;
   border: none;
   border-radius: 999px;
-  transition: background 0.12s ease, transform 0.1s ease, box-shadow 0.12s ease;
+  transition: background 40ms ease-out, box-shadow 40ms ease-out;
 }
 .apply-btn svg {
   width: 14px;
@@ -511,7 +520,6 @@ onUnmounted(() => {
 .apply-btn:active {
   background: #d8dee6;
   box-shadow: none;
-  transform: scale(0.88);
 }
 .cal-card {
   padding: 4px 0 2px;
@@ -542,6 +550,7 @@ onUnmounted(() => {
   letter-spacing: 0.04em;
   padding: 4px 8px;
   border-radius: 8px;
+  transition: background 40ms ease-out, color 40ms ease-out;
 }
 .cal-title:hover {
   background: #243042;
@@ -573,12 +582,10 @@ onUnmounted(() => {
   border: 1px solid transparent;
   border-radius: 8px;
   color: var(--text);
+  transition: background 40ms ease-out;
 }
 .cal-nav:hover:not(:disabled) {
   background: #243042;
-}
-.cal-nav:active:not(:disabled) {
-  transform: scale(0.92);
 }
 .cal-nav:disabled {
   opacity: 0.28;
@@ -621,6 +628,7 @@ onUnmounted(() => {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  transition: background 40ms ease-out, color 40ms ease-out, box-shadow 40ms ease-out;
 }
 .cal-pick {
   display: grid;
@@ -636,6 +644,7 @@ onUnmounted(() => {
   background: transparent;
   color: var(--text);
   font-size: 13px;
+  transition: background 40ms ease-out, color 40ms ease-out;
 }
 .cal-pick button:hover:not(:disabled):not(.on) {
   background: #243042;
@@ -645,15 +654,15 @@ onUnmounted(() => {
   color: #0b0e12;
   font-weight: 600;
 }
+.cal-pick button.on:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
 .cal-pick button:disabled {
   opacity: 0.28;
   cursor: default;
 }
 .cal-day:hover:not(:disabled):not(.bound) {
   background: #243042;
-}
-.cal-day:active:not(:disabled) {
-  transform: scale(0.92);
 }
 .cal-day.muted {
   color: #6b7787;
@@ -669,6 +678,9 @@ onUnmounted(() => {
   background: var(--mint);
   color: #0b0e12;
   font-weight: 600;
+}
+.cal-day.bound:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 .cal-day:disabled {
   opacity: 0.28;
@@ -688,12 +700,10 @@ onUnmounted(() => {
   font-size: 12px;
   padding: 2px 6px;
   border-radius: 6px;
+  transition: background 40ms ease-out, color 40ms ease-out;
 }
 .cal-foot button:hover {
   background: rgba(62, 224, 179, 0.12);
   color: #f4f8fc;
-}
-.cal-foot button:active {
-  transform: scale(0.96);
 }
 </style>

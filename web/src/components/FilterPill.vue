@@ -123,6 +123,11 @@ onUnmounted(() => {
   cursor: pointer;
   min-width: 0;
   line-height: 1.2;
+  transition: background 40ms ease-out, border-color 40ms ease-out;
+}
+.filter-pill:hover {
+  border-color: #3d4b5e;
+  background: #1c2430;
 }
 .filter-dd.open .filter-pill {
   border-color: #3d4b5e;
@@ -209,10 +214,14 @@ onUnmounted(() => {
   font-size: 13px;
   cursor: pointer;
   user-select: none;
+  transition: background 40ms ease-out, color 40ms ease-out;
 }
 .filter-menu li:hover {
   background: #243042;
   color: #f4f8fc;
+}
+.filter-menu li:active {
+  background: #2a3a4e;
 }
 .filter-menu li.selected {
   color: #e7edf5;
