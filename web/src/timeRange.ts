@@ -55,6 +55,15 @@ export function resolvePreset(id: Exclude<PresetId, 'custom'>, now = new Date())
   return { from: new Date(to.getTime() - h * 3600 * 1000), to }
 }
 
+/** Sliding query window: presets follow now; custom ending today extends `to`. */
+export function liveRange(applied: AppliedRange, now = new Date()): { from: Date; to: Date } {
+  if (applied.preset !== 'custom') return resolvePreset(applied.preset, now)
+  const from = applied.from
+  let to = applied.to
+  if (toYmd(to) === toYmd(now) && to.getTime() < now.getTime()) to = new Date(now)
+  return { from, to }
+}
+
 export function resolveCustom(fromYmd: string, toYmd: string, now = new Date()): { from: Date; to: Date } {
   let a = parseYmd(fromYmd) ?? startOfLocalDay(now)
   let b = parseYmd(toYmd) ?? startOfLocalDay(now)

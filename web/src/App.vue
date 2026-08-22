@@ -18,9 +18,10 @@ import SessionList from './components/SessionList.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import TimeRangeBar from './components/TimeRangeBar.vue'
 import TrendChart from './components/TrendChart.vue'
-import { presetLabel, resolvePreset, type AppliedRange } from './timeRange'
+import { liveRange, presetLabel, resolvePreset, type AppliedRange } from './timeRange'
 
 type Page = 'dash' | 'settings'
+const POLL_MS = 15_000
 
 const HIDE_KEY = 'ai-usage.hideProjects'
 
@@ -62,15 +63,18 @@ const options = ref<{ sources: string[]; models: string[]; projects: string[] }>
 
 const rangeLabel = computed(() => presetLabel(applied.value.preset, applied.value.from, applied.value.to))
 
-const query = computed(() => ({
-  from: applied.value.from.toISOString(),
-  to: applied.value.to.toISOString(),
-  host: host.value === 'all' ? undefined : host.value,
-  source: source.value || undefined,
-  model: model.value || undefined,
-  project: hideProjects.value ? undefined : project.value || undefined,
-  hide_projects: hideProjects.value,
-}))
+const query = computed(() => {
+  const range = liveRange(applied.value)
+  return {
+    from: range.from.toISOString(),
+    to: range.to.toISOString(),
+    host: host.value === 'all' ? undefined : host.value,
+    source: source.value || undefined,
+    model: model.value || undefined,
+    project: hideProjects.value ? undefined : project.value || undefined,
+    hide_projects: hideProjects.value,
+  }
+})
 
 const sourceOpts = computed(() => options.value.sources.map((s) => ({ value: s, label: s })))
 const modelOpts = computed(() => options.value.models.map((m) => ({ value: m, label: m })))
@@ -83,9 +87,18 @@ function asList(v: BreakdownItem[] | undefined): BreakdownItem[] {
   return Array.isArray(v) ? v : []
 }
 
-async function refresh() {
-  loading.value = true
-  err.value = ''
+let refreshSeq = 0
+let inFlight = false
+
+async function refresh(opts?: { silent?: boolean }) {
+  const silent = opts?.silent === true
+  if (silent && inFlight) return
+  const my = ++refreshSeq
+  inFlight = true
+  if (!silent) {
+    loading.value = true
+    err.value = ''
+  }
   try {
     const q = query.value
     const [s, ser, dist, act, sess, hs, fo] = await Promise.all([
@@ -97,6 +110,7 @@ async function refresh() {
       api.hosts(),
       api.filters(q),
     ])
+    if (my !== refreshSeq) return
     summary.value = s
     points.value = ser.points ?? []
     distributions.value = {
@@ -112,11 +126,25 @@ async function refresh() {
       host.value = 'all'
     }
     options.value = fo
+    err.value = ''
   } catch (e) {
+    if (my !== refreshSeq) return
     err.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (my === refreshSeq) {
+      inFlight = false
+      loading.value = false
+    }
   }
+}
+
+function poll() {
+  if (page.value !== 'dash' || document.hidden) return
+  void refresh({ silent: true })
+}
+
+function onVisibility() {
+  if (!document.hidden) poll()
 }
 
 function onRangeApply(r: AppliedRange) {
@@ -142,12 +170,26 @@ watch(hideProjects, (v) => {
   if (v) project.value = ''
 })
 
-watch([applied, host, source, model, project, hideProjects], refresh)
+watch([applied, host, source, model, project, hideProjects], () => {
+  void refresh()
+})
+watch(page, (p) => {
+  if (p === 'dash') poll()
+})
+
+let pollTimer: ReturnType<typeof setInterval> | undefined
+
 onMounted(() => {
   window.addEventListener('popstate', onPop)
-  refresh()
+  document.addEventListener('visibilitychange', onVisibility)
+  pollTimer = setInterval(poll, POLL_MS)
+  void refresh()
 })
-onUnmounted(() => window.removeEventListener('popstate', onPop))
+onUnmounted(() => {
+  window.removeEventListener('popstate', onPop)
+  document.removeEventListener('visibilitychange', onVisibility)
+  if (pollTimer !== undefined) clearInterval(pollTimer)
+})
 
 const hostLabels = computed(() => {
   const m: Record<string, string> = {}
