@@ -81,11 +81,15 @@ pub fn run_loop(
                             report.ingested, report.sessions
                         );
                     }
-                    state.set_last_sync(LastSyncView::from_report(&report));
+                    state.record_sync(run_local, run_cursor, LastSyncView::now_ok());
                 }
                 Err(err) => {
                     eprintln!("同步失败: {err:#}");
-                    state.set_last_sync(LastSyncView::from_error(&err.to_string()));
+                    state.record_sync(
+                        run_local,
+                        run_cursor,
+                        LastSyncView::from_error(&err.to_string()),
+                    );
                 }
             }
             let now = Instant::now();

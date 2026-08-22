@@ -23,13 +23,13 @@
     html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
     button, input, textarea, select { font: inherit; color: inherit; }
     button { cursor: pointer; }
-    .app { max-width: 1080px; margin: 0 auto; padding: 20px 24px 64px; }
+    .app { max-width: 1080px; margin: 0 auto; padding: 16px 24px 56px; }
     .top {
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     .brand { display: flex; flex-direction: column; gap: 2px; }
     .brand h1 {
@@ -40,7 +40,14 @@
     }
     .brand h1 span { color: var(--mint); }
     .brand p { margin: 0; color: var(--muted); font-size: 12px; }
-    .nav { display: flex; gap: 6px; }
+    .brand p code {
+      font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      color: var(--text);
+    }
+    .nav { display: flex; align-items: center; gap: 10px; }
+    .nav .msg { margin: 0; min-height: 0; }
+    .nav .msg:empty { display: none; }
     .btn {
       border: 1px solid var(--line);
       background: var(--bg-elev);
@@ -62,32 +69,58 @@
     }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
     .kpis-row {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      display: flex;
+      flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 16px;
+      margin-bottom: 12px;
     }
     .kpi {
       background: var(--bg-elev);
       border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: var(--shadow);
+      border-radius: 10px;
+      padding: 8px 12px;
       min-width: 0;
     }
-    .kpi .label { color: var(--muted); font-size: 11px; }
-    .kpi .value {
-      font-size: 16px;
+    .kpi-sync { flex: 0 1 260px; }
+    .kpi-tools { flex: 0 0 auto; }
+    .kpi .label { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
+    .sync-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
       margin-top: 6px;
+      font-size: 13px;
       font-variant-numeric: tabular-nums;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
-    .kpi .value.mint { color: var(--mint); }
-    .kpi .value.amber { color: var(--amber); }
-    .kpi .value.rose { color: var(--rose); }
-    .kpi .hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    .sync-line {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .sync-line .k {
+      color: var(--muted);
+      width: 46px;
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .sync-line .t { color: var(--text); }
+    .sync-line.idle .t { color: var(--muted); }
+    .sync-line.err .t { color: var(--rose); }
+    .tool-icons { display: flex; gap: 6px; margin-top: 6px; }
+    .tool {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg-elev-2);
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      opacity: 0.34;
+      filter: grayscale(1);
+    }
+    .tool svg, .tool img { width: 22px; height: 22px; display: block; object-fit: contain; }
+    .tool.on { opacity: 1; filter: none; }
     .card {
       background: var(--bg-elev);
       border: 1px solid var(--line);
@@ -240,14 +273,36 @@
       font-size: 13px;
       grid-column: 1 / -1;
     }
-    label.field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    label.field { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+    .fields {
+      display: grid;
+      grid-template-columns: minmax(140px, 0.7fr) minmax(200px, 1.3fr);
+      gap: 8px 12px;
+    }
+    .fields.even { grid-template-columns: 1fr 1fr; }
+    .fields + .fields { margin-top: 8px; }
+    .fields label.field { margin: 0; }
+    .card-cfg { padding: 12px 14px; }
+    .card-cfg .card-head { margin-bottom: 8px; }
+    .card-cfg label.field input {
+      display: block;
+      margin-top: 4px;
+    }
+    .cfg-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
     input[type="text"], input[type="password"], textarea {
       width: 100%;
       background: var(--bg-elev-2);
       color: var(--text);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 8px 10px;
+      padding: 7px 10px;
       color-scheme: dark;
     }
     textarea {
@@ -262,15 +317,14 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-top: 14px;
       font-size: 13px;
     }
-    .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
-    .msg { min-height: 1.2em; margin-top: 10px; color: var(--muted); font-size: 12px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .msg { min-height: 1.2em; margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .card-cfg .msg:empty { display: none; }
     .msg.err { color: var(--rose); }
     .msg.ok { color: var(--mint); }
     .err { color: var(--rose); font-size: 13px; margin-bottom: 12px; }
-    .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
     dialog {
       border: 0;
       padding: 0;
@@ -318,12 +372,10 @@
       margin-top: 14px;
     }
     .grow { flex: 1; }
-    @media (max-width: 900px) {
-      .kpis-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
     @media (max-width: 640px) {
-      .kpis-row { grid-template-columns: 1fr; }
       .top { flex-direction: column; align-items: flex-start; }
+      .kpi-sync { flex: 1 1 100%; }
+      .fields, .fields.even { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -332,33 +384,25 @@
     <header class="top">
       <div class="brand">
         <h1>AI <span>Usage</span></h1>
-        <p>采集端 · 凭证只留在这台机器，不会上报看板</p>
+        <p>采集端 · 凭证只留本机 · <code id="kpi-panel">—</code></p>
       </div>
       <nav class="nav">
+        <span class="msg" id="sync-msg"></span>
         <button type="button" class="btn primary" id="sync-now">立即同步</button>
       </nav>
     </header>
     <p class="err" id="page-err" hidden></p>
     <section class="kpis-row">
-      <div class="kpi">
+      <div class="kpi kpi-sync">
         <div class="label">上次同步</div>
-        <div class="value" id="kpi-sync">尚未同步</div>
-        <div class="hint" id="kpi-sync-hint">点击右上角立即拉取</div>
+        <div class="sync-lines" id="kpi-sync">
+          <div class="sync-line idle"><span class="k">agent</span><span class="t">尚未同步</span></div>
+          <div class="sync-line idle"><span class="k">cursor</span><span class="t">尚未同步</span></div>
+        </div>
       </div>
-      <div class="kpi">
+      <div class="kpi kpi-tools">
         <div class="label">本机工具</div>
-        <div class="value mint" id="kpi-tools">—</div>
-        <div class="tools" id="tools"></div>
-      </div>
-      <div class="kpi">
-        <div class="label">看板地址</div>
-        <div class="value" id="kpi-url">—</div>
-        <div class="hint" id="kpi-host"></div>
-      </div>
-      <div class="kpi">
-        <div class="label">面板</div>
-        <div class="value" id="kpi-panel">—</div>
-        <div class="hint" id="kpi-token"></div>
+        <div class="tool-icons" id="tools"></div>
       </div>
     </section>
 
@@ -371,28 +415,31 @@
       <div class="msg" id="acct-msg"></div>
     </section>
 
-    <section class="card">
+    <section class="card card-cfg">
       <div class="card-head"><h2>上报</h2></div>
-      <label class="field" for="url">看板地址</label>
-      <input id="url" type="text" autocomplete="off" />
-      <label class="field" for="hostname">主机显示名</label>
-      <input id="hostname" type="text" autocomplete="off" />
-      <div class="row">
-        <div>
-          <label class="field" for="interval_local">本地工具间隔</label>
-          <input id="interval_local" type="text" placeholder="5m" />
-        </div>
-        <div>
-          <label class="field" for="interval_cursor">Cursor 间隔</label>
-          <input id="interval_cursor" type="text" placeholder="30m" />
-        </div>
+      <div class="fields">
+        <label class="field" for="hostname">主机显示名
+          <input id="hostname" type="text" autocomplete="off" />
+        </label>
+        <label class="field" for="url">看板地址
+          <input id="url" type="text" autocomplete="off" />
+        </label>
       </div>
-      <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
-      <div class="actions">
-        <button type="button" class="btn primary" id="save-cfg">保存配置</button>
+      <div class="fields even">
+        <label class="field" for="interval_local">本地工具间隔
+          <input id="interval_local" type="text" placeholder="5m" />
+        </label>
+        <label class="field" for="interval_cursor">Cursor 间隔
+          <input id="interval_cursor" type="text" placeholder="30m" />
+        </label>
+      </div>
+      <div class="cfg-foot">
+        <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
+        <div class="actions">
+          <button type="button" class="btn primary" id="save-cfg">保存配置</button>
+        </div>
       </div>
       <div class="msg" id="cfg-msg"></div>
-      <div class="msg" id="sync-msg"></div>
     </section>
   </div>
 
@@ -447,6 +494,12 @@
         "M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1",
       ],
       x: ["M18 6 6 18", "M6 6l12 12"],
+    };
+    const TOOL_MARKS = {
+      "claude-code": "Claude Code",
+      codex: "Codex",
+      grok: "Grok",
+      cursor: "Cursor",
     };
 
     function fmtExp(exp) {
@@ -536,6 +589,38 @@
       btn.appendChild(svgIcon(ICONS[name]));
       return btn;
     }
+    function fmtWhen(iso) {
+      if (!iso) return "尚未同步";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso.replace("T", " ").slice(0, 19);
+      const pad = (n) => String(n).padStart(2, "0");
+      const hm = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+      const now = new Date();
+      const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+      if (sameDay) return hm;
+      return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + hm;
+    }
+    function syncLine(label, ls) {
+      const line = el("div", "sync-line" + (!ls ? " idle" : ls.error ? " err" : ""));
+      line.appendChild(el("span", "k", label));
+      const t = el("span", "t", ls ? fmtWhen(ls.at) : "尚未同步");
+      if (ls && ls.error) t.title = ls.error;
+      line.appendChild(t);
+      return line;
+    }
+    function toolMark(t) {
+      const label = TOOL_MARKS[t.id] || t.id;
+      const wrap = el("div", "tool" + (t.found ? " on" : ""));
+      wrap.title = label + (t.found ? "" : " · 未发现");
+      wrap.setAttribute("aria-label", wrap.title);
+      const img = document.createElement("img");
+      img.src = "/icons/" + encodeURIComponent(t.id) + ".svg";
+      img.alt = "";
+      img.width = 22;
+      img.height = 22;
+      wrap.appendChild(img);
+      return wrap;
+    }
     function renderAccount(a) {
       const card = el("article", "acct");
       const top = el("div", "acct-top");
@@ -610,40 +695,14 @@
       $("interval_local").value = s.interval_local || "";
       $("interval_cursor").value = s.interval_cursor || "";
       $("upload_project").checked = !!s.upload_project;
-      $("kpi-url").textContent = s.url || "未配置";
-      $("kpi-host").textContent = s.hostname ? "主机 " + s.hostname : "";
-      $("kpi-panel").textContent = s.panel || "";
-      $("kpi-token").textContent = "ingest " + (s.token_prefix || "");
+      $("kpi-panel").textContent = s.panel || s.bind || "—";
       const tools = $("tools");
       tools.innerHTML = "";
-      const found = (s.tools || []).filter((t) => t.found).length;
-      const total = (s.tools || []).length;
-      $("kpi-tools").textContent = found + " / " + total;
-      (s.tools || []).forEach((t) => {
-        const span = el("span", "chip" + (t.found ? " on" : ""), t.found ? t.id : t.id + " 未发现");
-        tools.appendChild(span);
-      });
-      const ls = s.last_sync;
-      const syncVal = $("kpi-sync");
-      const syncHint = $("kpi-sync-hint");
-      if (!ls) {
-        syncVal.textContent = "尚未同步";
-        syncVal.className = "value";
-        syncHint.textContent = "点击右上角立即拉取";
-      } else {
-        const when = (ls.at || "").replace("T", " ").slice(0, 19);
-        if (ls.error) {
-          syncVal.textContent = "失败";
-          syncVal.className = "value rose";
-          syncHint.textContent = ls.error;
-        } else {
-          syncVal.textContent = "完成";
-          syncVal.className = "value mint";
-          const extra = (ls.parser_lines || []).join(" · ");
-          syncHint.textContent = when + (extra ? " · " + extra : "") +
-            " · 上报 " + (ls.ingested || 0) + " buckets";
-        }
-      }
+      (s.tools || []).forEach((t) => tools.appendChild(toolMark(t)));
+      const sync = $("kpi-sync");
+      sync.innerHTML = "";
+      sync.appendChild(syncLine("agent", s.last_sync_agent));
+      sync.appendChild(syncLine("cursor", s.last_sync_cursor));
       paintAccounts(s);
     }
     function paintAccounts(s) {

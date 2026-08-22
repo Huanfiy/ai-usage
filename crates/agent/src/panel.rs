@@ -16,9 +16,12 @@ use ai_usage_parsers::{
 
 use crate::config::AgentConfig;
 use crate::cursor_accounts::{self, AccountView, CursorAccountsFile};
-use crate::sync::SyncReport;
 
 const HTML: &str = include_str!("panel.html");
+const ICON_CLAUDE_CODE: &[u8] = include_bytes!("panel-icons/claude-code.svg");
+const ICON_CODEX: &[u8] = include_bytes!("panel-icons/codex.svg");
+const ICON_GROK: &[u8] = include_bytes!("panel-icons/grok.svg");
+const ICON_CURSOR: &[u8] = include_bytes!("panel-icons/cursor.svg");
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_HEADERS: usize = 8 * 1024;
 const PLAN_TTL: Duration = Duration::from_secs(90);
@@ -40,28 +43,22 @@ struct CachedPlan {
 
 struct Inner {
     cfg: AgentConfig,
-    last_sync: Option<LastSyncView>,
+    last_sync_agent: Option<LastSyncView>,
+    last_sync_cursor: Option<LastSyncView>,
     sync_requested: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LastSyncView {
     pub at: String,
-    pub warnings: Vec<String>,
-    pub parser_lines: Vec<String>,
-    pub ingested: u64,
-    pub sessions: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl LastSyncView {
-    pub fn from_report(report: &SyncReport) -> Self {
+    pub fn now_ok() -> Self {
         Self {
             at: Utc::now().to_rfc3339(),
-            warnings: report.warnings.clone(),
-            parser_lines: report.parser_lines.clone(),
-            ingested: report.ingested,
-            sessions: report.sessions,
             error: None,
         }
     }
@@ -69,10 +66,6 @@ impl LastSyncView {
     pub fn from_error(err: &str) -> Self {
         Self {
             at: Utc::now().to_rfc3339(),
-            warnings: Vec::new(),
-            parser_lines: Vec::new(),
-            ingested: 0,
-            sessions: 0,
             error: Some(err.to_string()),
         }
     }
@@ -85,7 +78,8 @@ impl PanelState {
             data_dir,
             inner: Mutex::new(Inner {
                 cfg,
-                last_sync: None,
+                last_sync_agent: None,
+                last_sync_cursor: None,
                 sync_requested: false,
             }),
             wake: Condvar::new(),
@@ -154,8 +148,14 @@ impl PanelState {
         let _ = self.wake.wait_timeout(g, timeout);
     }
 
-    pub fn set_last_sync(&self, view: LastSyncView) {
-        self.inner.lock().expect("panel state").last_sync = Some(view);
+    pub fn record_sync(&self, agent: bool, cursor: bool, view: LastSyncView) {
+        let mut g = self.inner.lock().expect("panel state");
+        if agent {
+            g.last_sync_agent = Some(view.clone());
+        }
+        if cursor {
+            g.last_sync_cursor = Some(view);
+        }
     }
 }
 
@@ -277,6 +277,10 @@ fn dispatch(
         ("GET", "/") | ("GET", "/index.html") => {
             (200, "text/html; charset=utf-8", HTML.as_bytes().to_vec())
         }
+        ("GET", "/icons/claude-code.svg") => svg_ok(ICON_CLAUDE_CODE),
+        ("GET", "/icons/codex.svg") => svg_ok(ICON_CODEX),
+        ("GET", "/icons/grok.svg") => svg_ok(ICON_GROK),
+        ("GET", "/icons/cursor.svg") => svg_ok(ICON_CURSOR),
         ("GET", "/v1/status") => json_ok(status_payload(state)),
         ("PUT", "/v1/config") => match put_config(state, body) {
             Ok(()) => json_ok(serde_json::json!({"ok": true})),
@@ -315,6 +319,10 @@ fn dispatch(
 
 fn json_ok(v: serde_json::Value) -> (u16, &'static str, Vec<u8>) {
     json_status(200, v)
+}
+
+fn svg_ok(bytes: &[u8]) -> (u16, &'static str, Vec<u8>) {
+    (200, "image/svg+xml; charset=utf-8", bytes.to_vec())
 }
 
 fn json_status(status: u16, v: serde_json::Value) -> (u16, &'static str, Vec<u8>) {
@@ -408,7 +416,8 @@ struct StatusPayload {
     token_prefix: String,
     tools: Vec<ToolView>,
     cursor_accounts: Vec<AccountView>,
-    last_sync: Option<LastSyncView>,
+    last_sync_agent: Option<LastSyncView>,
+    last_sync_cursor: Option<LastSyncView>,
 }
 
 #[derive(Serialize)]
@@ -429,7 +438,10 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         .collect();
     let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
     let ide = read_ide_cursor_auth(&ctx);
-    let last_sync = state.inner.lock().expect("panel state").last_sync.clone();
+    let (last_sync_agent, last_sync_cursor) = {
+        let g = state.inner.lock().expect("panel state");
+        (g.last_sync_agent.clone(), g.last_sync_cursor.clone())
+    };
     let payload = StatusPayload {
         url: cfg.url.clone(),
         hostname: cfg.hostname.clone(),
@@ -445,7 +457,8 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
             apply_live_plan(state, &mut views, &extras, ide.as_ref());
             views
         },
-        last_sync,
+        last_sync_agent,
+        last_sync_cursor,
     };
     serde_json::to_value(payload).unwrap_or(serde_json::json!({}))
 }
@@ -676,6 +689,38 @@ mod tests {
         let (st, _, _) = dispatch(&state, "POST", "/v1/sync", b"{}");
         assert_eq!(st, 202);
         assert!(state.take_sync_request());
+    }
+
+    #[test]
+    fn serves_official_tool_icons() {
+        let (_dir, state) = setup();
+        for name in ["claude-code", "codex", "grok", "cursor"] {
+            let path = format!("/icons/{name}.svg");
+            let (st, ct, body) = dispatch(&state, "GET", &path, b"");
+            assert_eq!(st, 200, "{path}");
+            assert!(ct.starts_with("image/svg+xml"));
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("<svg"), "{path}");
+        }
+        let (st, _, _) = dispatch(&state, "GET", "/icons/nope.svg", b"");
+        assert_eq!(st, 404);
+    }
+
+    #[test]
+    fn record_sync_splits_agent_and_cursor() {
+        let (_dir, state) = setup();
+        state.record_sync(true, false, LastSyncView::now_ok());
+        let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["last_sync_agent"].is_object());
+        assert!(v["last_sync_agent"]["error"].is_null());
+        assert!(v["last_sync_cursor"].is_null());
+
+        state.record_sync(false, true, LastSyncView::from_error("cursor down"));
+        let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["last_sync_agent"].is_object());
+        assert_eq!(v["last_sync_cursor"]["error"], "cursor down");
     }
 
     #[test]
