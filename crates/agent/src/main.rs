@@ -13,7 +13,11 @@ use clap::{Parser, Subcommand};
 use config::AgentConfig;
 
 #[derive(Parser)]
-#[command(name = "ai-usage-agent", version, about = "采集本机 AI 工具用量并上报看板")]
+#[command(
+    name = "ai-usage-agent",
+    version,
+    about = "采集本机 AI 工具用量并上报看板"
+)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -144,7 +148,10 @@ fn status(config_path: &PathBuf, data_dir: &PathBuf) -> Result<()> {
         Ok(cfg) => {
             println!("url:      {}", cfg.url);
             println!("hostname: {}", cfg.hostname);
-            println!("token:    {}…", cfg.token.chars().take(12).collect::<String>());
+            println!(
+                "token:    {}…",
+                cfg.token.chars().take(12).collect::<String>()
+            );
         }
         Err(_) => println!("尚未 init"),
     }

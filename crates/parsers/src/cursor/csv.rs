@@ -160,10 +160,7 @@ mod tests {
         assert_eq!(iso.cache_creation_input_tokens, 0);
         assert_eq!(iso.cache_read_input_tokens, 0);
         assert_eq!(iso.output_tokens, 20);
-        assert_eq!(
-            iso.timestamp.to_rfc3339(),
-            "2026-01-15T10:45:00+00:00"
-        );
+        assert_eq!(iso.timestamp.to_rfc3339(), "2026-01-15T10:45:00+00:00");
     }
 
     #[test]

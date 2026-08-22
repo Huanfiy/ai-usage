@@ -72,7 +72,9 @@ fn b64url_encode(bytes: &[u8]) -> String {
         if b1.is_none() {
             break;
         }
-        out.push(TABLE[(((b1.unwrap_or(0) & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char);
+        out.push(
+            TABLE[(((b1.unwrap_or(0) & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char,
+        );
         if b2.is_none() {
             break;
         }
@@ -89,7 +91,10 @@ fn fake_jwt(sub: &str, email: &str) -> String {
     } else {
         format!(r#"{{"sub":"{sub}","email":"{email}"}}"#)
     };
-    format!("eyJhbGciOiJub25lIn0.{}.sig", b64url_encode(payload.as_bytes()))
+    format!(
+        "eyJhbGciOiJub25lIn0.{}.sig",
+        b64url_encode(payload.as_bytes())
+    )
 }
 
 #[cfg(test)]

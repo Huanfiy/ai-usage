@@ -16,12 +16,7 @@ pub const SOURCE_CODEX: &str = "codex";
 pub const SOURCE_GROK: &str = "grok";
 pub const SOURCE_CURSOR: &str = "cursor";
 
-pub const KNOWN_SOURCES: &[&str] = &[
-    SOURCE_CLAUDE_CODE,
-    SOURCE_CODEX,
-    SOURCE_GROK,
-    SOURCE_CURSOR,
-];
+pub const KNOWN_SOURCES: &[&str] = &[SOURCE_CLAUDE_CODE, SOURCE_CODEX, SOURCE_GROK, SOURCE_CURSOR];
 
 pub fn is_known_source(source: &str) -> bool {
     KNOWN_SOURCES.contains(&source)
