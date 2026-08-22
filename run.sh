@@ -22,7 +22,7 @@ usage() {
 
 命令:
   build [release]      构建 Web UI 与采集/看板二进制（默认 debug）
-  run   [release] [...] 启动看板；其余参数转给 ai-usage-dash serve
+  run   [release] [...] 启动看板；端口已被本看板占用则先结束再启动
   dev                  看板 API + Vite 热更新（改 UI 不必重编二进制）
   agent [release] [...] 转发给 ai-usage-agent（缺二进制时先编）
   dash  [release] [...] 转发给 ai-usage-dash
@@ -90,6 +90,99 @@ port_open() {
   (echo >/dev/tcp/"$host"/"$port") >/dev/null 2>&1
 }
 
+run_bind() {
+  local bind="$BIND_DEFAULT" prev="" a
+  for a in "$@"; do
+    if [[ "$prev" == "--bind" ]]; then
+      bind="$a"
+      prev=""
+      continue
+    fi
+    case "$a" in
+      --bind=*) bind="${a#--bind=}" ;;
+      --bind) prev="--bind" ;;
+    esac
+  done
+  printf '%s\n' "$bind"
+}
+
+listen_pids() {
+  local port="$1"
+  {
+    if command -v ss >/dev/null 2>&1; then
+      ss -ltnp "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 || true
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+    fi
+  } | awk 'NF && !seen[$0]++'
+}
+
+proc_cmdline() {
+  local pid="$1"
+  if [[ -r "/proc/${pid}/cmdline" ]]; then
+    tr '\0' ' ' <"/proc/${pid}/cmdline"
+  else
+    ps -o args= -p "$pid" 2>/dev/null || true
+  fi
+}
+
+stop_dash_on_bind() {
+  local bind="$1"
+  local host="${bind%:*}"
+  local port="${bind##*:}"
+  if [[ "$bind" != *:* || -z "$host" || -z "$port" ]]; then
+    return 0
+  fi
+  if ! port_open "$host" "$port"; then
+    return 0
+  fi
+
+  local pid dash_pids=() other_pids=()
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$(proc_cmdline "$pid")" == *ai-usage-dash* ]]; then
+      dash_pids+=("$pid")
+    else
+      other_pids+=("$pid")
+    fi
+  done < <(listen_pids "$port")
+
+  if [[ ${#dash_pids[@]} -eq 0 ]]; then
+    if [[ ${#other_pids[@]} -gt 0 ]]; then
+      die "无法重启：${bind} 被其他进程占用（pid ${other_pids[*]}）"
+    fi
+    die "无法重启：${bind} 已被占用"
+  fi
+
+  log "结束已占用 ${bind} 的看板（pid ${dash_pids[*]}）"
+  for pid in "${dash_pids[@]}"; do
+    kill -INT "$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  done
+
+  local i alive
+  for i in $(seq 1 50); do
+    alive=0
+    for pid in "${dash_pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    if [[ "$alive" -eq 0 ]] && ! port_open "$host" "$port"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  for pid in "${dash_pids[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+  sleep 0.1
+  if port_open "$host" "$port"; then
+    die "无法释放 ${bind}"
+  fi
+}
+
 cmd_build() {
   take_profile "$@"
   if [[ ${#REST[@]} -gt 0 ]]; then
@@ -114,6 +207,7 @@ cmd_run() {
     web_build
   fi
   cargo_bins "$profile" ai-usage-dash
+  stop_dash_on_bind "$(run_bind "${extras[@]}")"
   log "启动看板（Ctrl+C 结束）"
   exec "$(bin_path ai-usage-dash "$profile")" serve "${extras[@]}"
 }
