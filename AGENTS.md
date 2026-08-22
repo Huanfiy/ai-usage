@@ -39,7 +39,8 @@ tmp/               本地产物，不入库
 
 | 命令 | 用途 |
 | --- | --- |
-| `./run.sh build` | 构建 Web UI 与两端二进制 |
+| `./run.sh build` | 构建 Web UI 与两端二进制（host gnu，默认 debug） |
+| `./run.sh build musl` | 静态 musl 发布构建，产物在 `target/x86_64-unknown-linux-musl/release/` |
 | `./run.sh run` | 启动看板 |
 | `./run.sh dev` | 看板 API + Vite 热更新 |
 | `./run.sh test` | `cargo test --workspace` |

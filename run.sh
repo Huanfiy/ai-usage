@@ -9,6 +9,7 @@ BIND_DEFAULT="127.0.0.1:3847"
 AGENT_PANEL_DEFAULT="127.0.0.1:3848"
 AGENT_SERVICE="ai-usage-agent.service"
 VITE_URL="http://127.0.0.1:5173"
+MUSL_TARGET="x86_64-unknown-linux-musl"
 
 log() { printf '==> %s\n' "$*"; }
 err() { printf 'run.sh: %s\n' "$*" >&2; }
@@ -23,7 +24,7 @@ usage() {
 用法: ./run.sh <命令> [参数]
 
 命令:
-  build [release]      构建 Web UI 与采集/看板二进制（默认 debug）
+  build [release|musl] 构建 Web UI 与采集/看板二进制（默认 debug；musl 为静态发布）
   run   [release] [...] 启动看板；端口已被本看板占用则先结束再启动
   dev                  看板 API + Vite 热更新（改 UI 不必重编二进制）
   agent [release] [...] 转发给 ai-usage-agent（缺二进制时先编）
@@ -37,6 +38,7 @@ usage() {
 
 示例:
   ./run.sh build
+  ./run.sh build musl
   ./run.sh run
   ./run.sh run --bind 127.0.0.1:3847
   ./run.sh dev
@@ -49,11 +51,11 @@ EOF
 
 bin_path() {
   local name="$1" profile="$2"
-  if [[ "$profile" == release ]]; then
-    printf '%s/target/release/%s' "$ROOT" "$name"
-  else
-    printf '%s/target/debug/%s' "$ROOT" "$name"
-  fi
+  case "$profile" in
+    musl) printf '%s/target/%s/release/%s' "$ROOT" "$MUSL_TARGET" "$name" ;;
+    release) printf '%s/target/release/%s' "$ROOT" "$name" ;;
+    *) printf '%s/target/debug/%s' "$ROOT" "$name" ;;
+  esac
 }
 
 take_profile() {
@@ -84,13 +86,41 @@ cargo_bins() {
   shift
   need_cmd cargo
   local args=()
-  [[ "$profile" == release ]] && args+=(--release)
+  if [[ "$profile" == musl ]]; then
+    need_cmd rustup
+    need_cmd musl-gcc
+    if ! rustup target list --installed | grep -qx "$MUSL_TARGET"; then
+      die "未安装 musl target。先执行: rustup target add $MUSL_TARGET"
+    fi
+    export CC_x86_64_unknown_linux_musl=musl-gcc
+    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+    export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C target-feature=+crt-static"
+    args+=(--release --target "$MUSL_TARGET")
+  elif [[ "$profile" == release ]]; then
+    args+=(--release)
+  fi
   local p
   for p in "$@"; do
     args+=(-p "$p")
   done
   log "cargo build ${args[*]}"
   cargo build "${args[@]}"
+}
+
+assert_static() {
+  local bin="$1" info ldd_out
+  [[ -x "$bin" ]] || die "未找到二进制: $bin"
+  info="$(file -b "$bin" 2>/dev/null || file "$bin")"
+  log "$bin: $info"
+  if ! command -v ldd >/dev/null 2>&1; then
+    return 0
+  fi
+  ldd_out="$(ldd "$bin" 2>&1 || true)"
+  if grep -qiE 'not a dynamic executable|statically linked' <<<"$ldd_out"; then
+    return 0
+  fi
+  err "$ldd_out"
+  die "不是静态二进制: $bin"
 }
 
 port_open() {
@@ -192,13 +222,23 @@ stop_dash_on_bind() {
 }
 
 cmd_build() {
-  take_profile "$@"
-  if [[ ${#REST[@]} -gt 0 ]]; then
-    die "未知参数: ${REST[*]}（可用: release）"
+  local profile=debug
+  case "${1:-}" in
+    "") ;;
+    release|--release) profile=release ;;
+    musl) profile=musl ;;
+    *) die "未知参数: $1（可用: release | musl）" ;;
+  esac
+  if [[ $# -gt 1 ]]; then
+    die "未知参数: $*（可用: release | musl）"
   fi
   web_build
-  cargo_bins "$PROFILE" ai-usage-dash ai-usage-agent
-  log "完成 → $(bin_path ai-usage-dash "$PROFILE")"
+  cargo_bins "$profile" ai-usage-dash ai-usage-agent
+  if [[ "$profile" == musl ]]; then
+    assert_static "$(bin_path ai-usage-dash musl)"
+    assert_static "$(bin_path ai-usage-agent musl)"
+  fi
+  log "完成 → $(bin_path ai-usage-dash "$profile")"
 }
 
 cmd_run() {
