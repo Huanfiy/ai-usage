@@ -44,7 +44,9 @@ tmp/               本地产物，不入库
 | `./run.sh dev` | 看板 API + Vite 热更新 |
 | `./run.sh test` | `cargo test --workspace` |
 | `./run.sh clean` | 清理构建产物 |
-| `./run.sh agent …` | 采集端 |
+| `./run.sh agent …` | 采集端 CLI |
+| `./run.sh agent reload` | 编采集端、装入 user service 并重启 |
+| `./run.sh panel` | 打开采集端本机面板 |
 | `./run.sh dash …` | 看板 CLI |
 
 ## 索引

@@ -10,7 +10,7 @@
 ./run.sh agent init --url http://127.0.0.1:3847 --token <token>
 ```
 
-浏览器打开 http://127.0.0.1:3847 。采集端 `./run.sh agent daemon` 提供本机配置面板（默认 http://127.0.0.1:3848 ）：改上报间隔、挂 Cursor 额外凭证。改 UI 用 `./run.sh dev`（Vite :5173，API 仍走看板）。自身文件只走 XDG（`~/.config/ai-usage`、`~/.local/share/ai-usage`），可用 `--config` / `--data-dir` 改到任意目录。不写 `~/.claude`、`~/.codex` 等工具目录。
+浏览器打开 http://127.0.0.1:3847 。采集端已装 user service 时用 `./run.sh agent reload` 更新二进制并重启，再 `./run.sh panel`（默认 http://127.0.0.1:3848 ）改上报间隔、挂 Cursor 额外凭证；不要再开一条前台 daemon。改 UI 用 `./run.sh dev`（Vite :5173，API 仍走看板）。自身文件只走 XDG（`~/.config/ai-usage`、`~/.local/share/ai-usage`），可用 `--config` / `--data-dir` 改到任意目录。不写 `~/.claude`、`~/.codex` 等工具目录。
 
 多机：看板部署到一台机器，各宿主机 agent 向外推送。Agent 不容器化。看板可选 `deploy/Dockerfile.dash`。
 

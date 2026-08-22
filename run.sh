@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 BIND_DEFAULT="127.0.0.1:3847"
+AGENT_PANEL_DEFAULT="127.0.0.1:3848"
+AGENT_SERVICE="ai-usage-agent.service"
 VITE_URL="http://127.0.0.1:5173"
 
 log() { printf '==> %s\n' "$*"; }
@@ -25,9 +27,13 @@ usage() {
   run   [release] [...] 启动看板；端口已被本看板占用则先结束再启动
   dev                  看板 API + Vite 热更新（改 UI 不必重编二进制）
   agent [release] [...] 转发给 ai-usage-agent（缺二进制时先编）
+  agent [release] reload
+                       编采集端、装到 user service 路径并重启
+                       （已有 service 时用这个，不要再开前台 daemon）
+  panel                打开采集端本机面板（默认 http://127.0.0.1:3848）
   dash  [release] [...] 转发给 ai-usage-dash
   test  [...]          cargo test --workspace；其余参数原样转发
-  clean [all]          清理 Rust / Web 产物；all 含 node_modules
+  clean [all]          清理构建产物；all 含 node_modules
 
 示例:
   ./run.sh build
@@ -35,6 +41,8 @@ usage() {
   ./run.sh run --bind 127.0.0.1:3847
   ./run.sh dev
   ./run.sh agent init --url http://127.0.0.1:3847 --token <token>
+  ./run.sh agent reload
+  ./run.sh panel
   ./run.sh clean
 EOF
 }
@@ -249,10 +257,141 @@ cmd_dev() {
   (cd "$ROOT/web" && npm run dev)
 }
 
+agent_config_path() {
+  if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+    printf '%s\n' "$XDG_CONFIG_HOME/ai-usage/agent.toml"
+  else
+    printf '%s\n' "$HOME/.config/ai-usage/agent.toml"
+  fi
+}
+
+agent_panel_bind() {
+  local toml bind=""
+  toml="$(agent_config_path)"
+  if [[ -f "$toml" ]]; then
+    bind="$(awk -F'=' '
+      $1 ~ /^[ \t]*bind[ \t]*$/ {
+        v=$2
+        gsub(/^[ \t"]+|[ \t"]+$/, "", v)
+        print v
+        exit
+      }
+    ' "$toml")"
+  fi
+  if [[ -z "$bind" ]]; then
+    bind="$AGENT_PANEL_DEFAULT"
+  fi
+  printf '%s\n' "$bind"
+}
+
+agent_service_bin() {
+  local show path=""
+  if command -v systemctl >/dev/null 2>&1; then
+    show="$(systemctl --user show -p ExecStart --value "$AGENT_SERVICE" 2>/dev/null || true)"
+    if [[ "$show" =~ path=([^[:space:];]+) ]]; then
+      path="${BASH_REMATCH[1]}"
+    fi
+  fi
+  if [[ -z "$path" ]]; then
+    path="$HOME/.local/bin/ai-usage-agent"
+  fi
+  printf '%s\n' "$path"
+}
+
+agent_service_present() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl --user is-enabled "$AGENT_SERVICE" >/dev/null 2>&1 \
+    || systemctl --user is-active "$AGENT_SERVICE" >/dev/null 2>&1
+}
+
+install_agent_bin() {
+  local src dst dir tmp
+  src="$(bin_path ai-usage-agent "$PROFILE")"
+  dst="$(agent_service_bin)"
+  [[ -x "$src" ]] || die "未找到二进制: $src"
+  if [[ "$(basename "$dst")" != "ai-usage-agent" ]]; then
+    die "拒绝覆盖非采集端路径: $dst"
+  fi
+  dir="$(dirname "$dst")"
+  mkdir -p "$dir"
+  tmp="${dst}.new.$$"
+  cp "$src" "$tmp"
+  chmod 755 "$tmp"
+  mv "$tmp" "$dst"
+  log "已安装 $dst"
+}
+
+wait_panel() {
+  local bind="$1"
+  local host="${bind%:*}"
+  local port="${bind##*:}"
+  local i
+  for i in $(seq 1 50); do
+    if port_open "$host" "$port"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+cmd_agent_reload() {
+  cargo_bins "$PROFILE" ai-usage-agent
+  install_agent_bin
+  if agent_service_present; then
+    log "重启 $AGENT_SERVICE"
+    systemctl --user restart "$AGENT_SERVICE"
+    if ! wait_panel "$(agent_panel_bind)"; then
+      err "service 已重启，但面板尚未监听 $(agent_panel_bind)"
+      systemctl --user --no-pager --full status "$AGENT_SERVICE" >&2 || true
+      exit 1
+    fi
+    log "面板  http://$(agent_panel_bind)"
+  else
+    log "未安装 user service。前台：./run.sh agent daemon"
+    log "安装 service：./run.sh agent daemon install"
+  fi
+}
+
+cmd_agent_panel() {
+  if [[ $# -gt 0 ]]; then
+    die "panel 不接受参数"
+  fi
+  local bind url
+  bind="$(agent_panel_bind)"
+  url="http://${bind}"
+  local host="${bind%:*}"
+  local port="${bind##*:}"
+  if ! port_open "$host" "$port"; then
+    die "面板未在监听 ${bind}。已有 service 时用 ./run.sh agent reload，否则 ./run.sh agent daemon"
+  fi
+  log "$url"
+  if command -v xdg-open >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    xdg-open "$url" >/dev/null 2>&1 || true
+  fi
+}
+
 cmd_agent() {
   take_profile "$@"
-  cargo_bins "$PROFILE" ai-usage-agent
-  exec "$(bin_path ai-usage-agent "$PROFILE")" "${REST[@]}"
+  local sub="${REST[0]:-}"
+  case "$sub" in
+    reload)
+      if [[ ${#REST[@]} -gt 1 ]]; then
+        die "未知参数: ${REST[*]:1}（可用: ./run.sh agent reload  或  ./run.sh agent release reload）"
+      fi
+      cmd_agent_reload
+      ;;
+    panel)
+      if [[ ${#REST[@]} -gt 1 ]]; then
+        die "未知参数: ${REST[*]:1}"
+      fi
+      cmd_agent_panel
+      ;;
+    *)
+      cargo_bins "$PROFILE" ai-usage-agent
+      exec "$(bin_path ai-usage-agent "$PROFILE")" "${REST[@]}"
+      ;;
+  esac
 }
 
 cmd_dash() {
@@ -294,6 +433,7 @@ main() {
     run) cmd_run "$@" ;;
     dev) cmd_dev "$@" ;;
     agent) cmd_agent "$@" ;;
+    panel) cmd_agent_panel "$@" ;;
     dash) cmd_dash "$@" ;;
     test) cmd_test "$@" ;;
     clean) cmd_clean "$@" ;;
