@@ -2,17 +2,15 @@
 
 两套独立静态二进制：采集端 `ai-usage-agent` 只读解析本机 AI 工具日志并增量上报；看板端 `ai-usage-dash` 接收多主机数据、落 SQLite、估算费用并内嵌 Web UI。
 
-本机：
+本机（`./run.sh help` 查看全部命令）：
 
 ```bash
-cd web && npm install && npm run build
-cargo build --release -p ai-usage-dash -p ai-usage-agent
-./target/release/ai-usage-dash serve --bind 127.0.0.1:3847
+./run.sh run
 # 按提示复制 ingest token
-./target/release/ai-usage-agent init --url http://127.0.0.1:3847 --token <token>
+./run.sh agent init --url http://127.0.0.1:3847 --token <token>
 ```
 
-浏览器打开 http://127.0.0.1:3847 。自身文件只走 XDG（`~/.config/ai-usage`、`~/.local/share/ai-usage`），可用 `--config` / `--data-dir` 改到任意目录。不写 `~/.claude`、`~/.codex` 等工具目录。
+浏览器打开 http://127.0.0.1:3847 。改 UI 用 `./run.sh dev`（Vite :5173，API 仍走看板）。自身文件只走 XDG（`~/.config/ai-usage`、`~/.local/share/ai-usage`），可用 `--config` / `--data-dir` 改到任意目录。不写 `~/.claude`、`~/.codex` 等工具目录。
 
 多机：看板部署到一台机器，各宿主机 agent 向外推送。Agent 不容器化。看板可选 `deploy/Dockerfile.dash`。
 

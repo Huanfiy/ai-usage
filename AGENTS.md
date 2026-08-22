@@ -29,19 +29,23 @@ fixtures/cursor/   Cursor CSV 夹具
 deploy/            systemd 与 Dockerfile.dash
 docs/design/       系统架构与解析边界
 scripts/           价目快照脚本
+run.sh             本机开发入口（build / run / clean …）
 tmp/               本地产物，不入库
 ```
 
 ## 构建与运行
 
-本机步骤见 [README.md](README.md)。
+本机入口 `./run.sh`（说明见 [README.md](README.md)）。
 
 | 命令 | 用途 |
 | --- | --- |
-| `cargo test --workspace` | 测试 |
-| `cd web && npm run dev` | UI 热更新（需同时跑 dash） |
-| `ai-usage-agent {init,sync,status,daemon}` | 采集端 |
-| `ai-usage-dash {serve,token,pricing}` | 看板端 |
+| `./run.sh build` | 构建 Web UI 与两端二进制 |
+| `./run.sh run` | 启动看板 |
+| `./run.sh dev` | 看板 API + Vite 热更新 |
+| `./run.sh test` | `cargo test --workspace` |
+| `./run.sh clean` | 清理构建产物 |
+| `./run.sh agent …` | 采集端 |
+| `./run.sh dash …` | 看板 CLI |
 
 ## 索引
 
