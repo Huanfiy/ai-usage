@@ -18,6 +18,7 @@ use crate::config::{self, AgentConfig, Destination};
 use crate::cursor_accounts::{self, AccountView, CursorAccountsFile};
 
 const HTML: &str = include_str!("panel.html");
+const ICON_FAVICON: &[u8] = include_bytes!("panel-icons/favicon.svg");
 const ICON_CLAUDE_CODE: &[u8] = include_bytes!("panel-icons/claude-code.svg");
 const ICON_CODEX: &[u8] = include_bytes!("panel-icons/codex.svg");
 const ICON_GROK: &[u8] = include_bytes!("panel-icons/grok.svg");
@@ -281,6 +282,7 @@ fn dispatch(
         ("GET", "/") | ("GET", "/index.html") => {
             (200, "text/html; charset=utf-8", HTML.as_bytes().to_vec())
         }
+        ("GET", "/favicon.svg") | ("GET", "/favicon.ico") => svg_ok(ICON_FAVICON),
         ("GET", "/icons/claude-code.svg") => svg_ok(ICON_CLAUDE_CODE),
         ("GET", "/icons/codex.svg") => svg_ok(ICON_CODEX),
         ("GET", "/icons/grok.svg") => svg_ok(ICON_GROK),
@@ -896,6 +898,22 @@ mod tests {
         }
         let (st, _, _) = dispatch(&state, "GET", "/icons/nope.svg", b"");
         assert_eq!(st, 404);
+    }
+
+    #[test]
+    fn serves_favicon() {
+        let (_dir, state) = setup();
+        let (st, _, html) = dispatch(&state, "GET", "/", b"");
+        assert_eq!(st, 200);
+        assert!(String::from_utf8(html).unwrap().contains("/favicon.svg"));
+        for path in ["/favicon.svg", "/favicon.ico"] {
+            let (st, ct, body) = dispatch(&state, "GET", path, b"");
+            assert_eq!(st, 200, "{path}");
+            assert!(ct.starts_with("image/svg+xml"));
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("<svg"), "{path}");
+            assert!(text.contains("AI Usage Agent"), "{path}");
+        }
     }
 
     #[test]

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">AI Usage Agent</title>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#12171e" stroke="#273040" stroke-width="2" />
+  <path
+    d="M12 32a20 20 0 0 1 40 0"
+    fill="none"
+    stroke="#3ee0b3"
+    stroke-linecap="round"
+    stroke-width="7"
+  />
+  <circle cx="32" cy="52" r="3.5" fill="#e8b15a" />
+  <path
+    d="m32 22 2.35 7.65L42 32l-7.65 2.35L32 42l-2.35-7.65L22 32l7.65-2.35Z"
+    fill="#e7edf5"
+  />
+</svg>
