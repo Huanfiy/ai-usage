@@ -3,7 +3,7 @@ use std::net::TcpListener;
 use std::path::Path;
 #[allow(unused_imports)]
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ai_usage_protocol::SOURCE_CURSOR;
 use anyhow::{Context, Result};
@@ -30,31 +30,31 @@ pub fn run_loop(
     });
     if let Some(d) = interval_override {
         println!(
-            "daemon 每 {} 同步一次（CLI 覆盖），Ctrl+C 结束",
+            "daemon 每 {} 对齐钟面同步一次（CLI 覆盖），Ctrl+C 结束",
             format_dur(d)
         );
     } else {
         let cfg = state.config();
         println!(
-            "daemon 本地 {} · Cursor {}，Ctrl+C 结束",
+            "daemon 本地 {} · Cursor {}（对齐钟面），Ctrl+C 结束",
             cfg.interval_local, cfg.interval_cursor
         );
     }
     println!("面板: http://{bound}");
 
-    let mut last_local: Option<Instant> = None;
-    let mut last_cursor: Option<Instant> = None;
+    let mut last_local: Option<SystemTime> = None;
+    let mut last_cursor: Option<SystemTime> = None;
     loop {
         let cfg = state.config();
-        let local_d = cfg.local_interval()?;
-        let cursor_d = cfg.cursor_interval()?;
+        let (local_d, cursor_d) = if let Some(d) = interval_override {
+            (d, d)
+        } else {
+            (cfg.local_interval()?, cfg.cursor_interval()?)
+        };
         let force = state.take_sync_request();
-        let run_local = force
-            || interval_override.is_some()
-            || last_local.map(|t| t.elapsed() >= local_d).unwrap_or(true);
-        let run_cursor = force
-            || interval_override.is_some()
-            || last_cursor.map(|t| t.elapsed() >= cursor_d).unwrap_or(true);
+        let now = SystemTime::now();
+        let run_local = force || due_aligned(last_local, local_d, now);
+        let run_cursor = force || due_aligned(last_cursor, cursor_d, now);
 
         let mut want = HashSet::new();
         if run_local {
@@ -92,7 +92,7 @@ pub fn run_loop(
                     );
                 }
             }
-            let now = Instant::now();
+            let now = SystemTime::now();
             if run_local {
                 last_local = Some(now);
             }
@@ -101,28 +101,35 @@ pub fn run_loop(
             }
         }
 
-        let wait = if let Some(d) = interval_override {
-            d
-        } else {
-            next_wait(last_local, local_d, last_cursor, cursor_d)
-        };
-        state.wait_timeout(wait);
+        state.wait_timeout(next_wait(SystemTime::now(), local_d, cursor_d));
     }
 }
 
-fn next_wait(
-    last_local: Option<Instant>,
-    local_d: Duration,
-    last_cursor: Option<Instant>,
-    cursor_d: Duration,
-) -> Duration {
-    let remain = |last: Option<Instant>, d: Duration| {
-        last.map(|t| d.saturating_sub(t.elapsed()))
-            .unwrap_or(Duration::ZERO)
-    };
-    let a = remain(last_local, local_d);
-    let b = remain(last_cursor, cursor_d);
-    let w = a.min(b);
+/// Next Unix-aligned instant strictly after `now` (5m → :00/:05/…, 30m → :00/:30).
+fn next_aligned(now: SystemTime, period: Duration) -> SystemTime {
+    let period_s = period.as_secs().max(1);
+    let now_s = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    UNIX_EPOCH + Duration::from_secs((now_s / period_s + 1) * period_s)
+}
+
+fn due_aligned(last: Option<SystemTime>, period: Duration, now: SystemTime) -> bool {
+    match last {
+        None => true,
+        Some(last) => now >= next_aligned(last, period),
+    }
+}
+
+fn aligned_wait(now: SystemTime, period: Duration) -> Duration {
+    next_aligned(now, period)
+        .duration_since(now)
+        .unwrap_or(Duration::from_secs(1))
+}
+
+fn next_wait(now: SystemTime, local_d: Duration, cursor_d: Duration) -> Duration {
+    let w = aligned_wait(now, local_d).min(aligned_wait(now, cursor_d));
     if w.is_zero() {
         Duration::from_secs(1)
     } else {
@@ -306,5 +313,48 @@ fn shell_escape(path: &Path) -> String {
         format!("\"{s}\"")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn five_min_aligns_to_clock() {
+        let five = Duration::from_secs(300);
+        // 01:03:20 → 01:05; exactly 01:05 → 01:10
+        assert_eq!(next_aligned(t(3800), five), t(3900));
+        assert_eq!(next_aligned(t(3900), five), t(4200));
+    }
+
+    #[test]
+    fn thirty_min_aligns_to_hour() {
+        let thirty = Duration::from_secs(1800);
+        // 01:00 → 01:30 → 02:00
+        assert_eq!(next_aligned(t(3600), thirty), t(5400));
+        assert_eq!(next_aligned(t(5400), thirty), t(7200));
+        assert_eq!(next_aligned(t(5399), thirty), t(5400));
+    }
+
+    #[test]
+    fn due_after_startup_then_next_tick() {
+        let five = Duration::from_secs(300);
+        assert!(due_aligned(None, five, t(3800)));
+        let last = t(3800);
+        assert!(!due_aligned(Some(last), five, t(3899)));
+        assert!(due_aligned(Some(last), five, t(3900)));
+    }
+
+    #[test]
+    fn wait_picks_sooner_tick() {
+        let five = Duration::from_secs(300);
+        let thirty = Duration::from_secs(1800);
+        // 01:03:20 → local 1:40, cursor 26:40 → 100s
+        assert_eq!(next_wait(t(3800), five, thirty), Duration::from_secs(100));
     }
 }
