@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   PRESETS,
+  customTabLabel,
+  firstOfMonthYmd,
   fmtYmd,
   parseYmd,
   resolveCustom,
@@ -17,18 +19,22 @@ const YEAR_SPAN = 12
 
 type CalMode = 'day' | 'month' | 'year'
 
+const props = defineProps<{ applied: AppliedRange }>()
 const emit = defineEmits<{ apply: [AppliedRange] }>()
 
 const wrap = ref<HTMLElement | null>(null)
-const preset = ref<PresetId>('7d')
+const preset = ref<PresetId>(props.applied.preset)
 const open = ref(false)
 const picker = ref<'from' | 'to'>('from')
 const mode = ref<CalMode>('day')
-const init = resolvePreset('7d')
-const fromYmd = ref(toYmd(init.from))
-const toYmdVal = ref(toYmd(init.to))
-const view = ref({ y: init.from.getFullYear(), m: init.from.getMonth() })
-const yearStart = ref(init.from.getFullYear() - 5)
+const fromYmd = ref(toYmd(props.applied.from))
+const toYmdVal = ref(toYmd(props.applied.to))
+const view = ref({ y: props.applied.from.getFullYear(), m: props.applied.from.getMonth() })
+const yearStart = ref(props.applied.from.getFullYear() - 5)
+const customLabel = computed(() => {
+  if (props.applied.preset !== 'custom') return '自定义'
+  return customTabLabel(props.applied.from, props.applied.to)
+})
 
 const todayYmd = computed(() => toYmd(new Date()))
 const maxYear = computed(() => new Date().getFullYear())
@@ -163,15 +169,23 @@ function toggleMonth() {
   mode.value = mode.value === 'month' ? 'day' : 'month'
 }
 
+function snapActiveToFirstOfView() {
+  const ymd = firstOfMonthYmd(view.value.y, view.value.m)
+  if (picker.value === 'from') fromYmd.value = ymd
+  else toYmdVal.value = ymd
+}
+
 function pickYear(y: number) {
   if (y > maxYear.value) return
   view.value = clampView(y, view.value.m)
+  snapActiveToFirstOfView()
   mode.value = 'day'
 }
 
 function pickMonth(m: number) {
   if (monthDisabled(m)) return
   view.value = { y: view.value.y, m }
+  snapActiveToFirstOfView()
   mode.value = 'day'
 }
 
@@ -242,7 +256,7 @@ onUnmounted(() => {
         :class="{ active: isActive(p.id) }"
         @click="selectPreset(p.id)"
       >
-        {{ p.label }}
+        {{ p.id === 'custom' ? customLabel : p.label }}
       </button>
     </div>
     <div v-if="open" class="custom-panel">

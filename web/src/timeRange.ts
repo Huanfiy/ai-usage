@@ -83,3 +83,69 @@ export function presetLabel(id: PresetId, from: Date, to: Date): string {
   if (id === 'custom') return `${fmtYmd(toYmd(from))} – ${fmtYmd(toYmd(to))}`
   return PRESETS.find((p) => p.id === id)?.label ?? id
 }
+
+export const RANGE_STORAGE_KEY = 'ai-usage.timeRange'
+
+export type StoredRange = {
+  preset: PresetId
+  from?: string
+  to?: string
+}
+
+export function isPresetId(v: unknown): v is PresetId {
+  return typeof v === 'string' && PRESETS.some((p) => p.id === v)
+}
+
+export function defaultRange(now = new Date()): AppliedRange {
+  return { ...resolvePreset('7d', now), preset: '7d' }
+}
+
+/** Inclusive local calendar days spanned by `[from, to]`. */
+export function coveredDays(from: Date, to: Date): number {
+  const a = startOfLocalDay(from).getTime()
+  const b = startOfLocalDay(to).getTime()
+  return Math.round(Math.abs(b - a) / 86_400_000) + 1
+}
+
+export function customTabLabel(from: Date, to: Date): string {
+  return `${coveredDays(from, to)}D`
+}
+
+export function firstOfMonthYmd(year: number, monthIndex: number, today = new Date()): string {
+  const ymd = toYmd(new Date(year, monthIndex, 1))
+  const limit = toYmd(today)
+  return ymd > limit ? limit : ymd
+}
+
+export function serializeRange(r: AppliedRange): StoredRange {
+  if (r.preset === 'custom') return { preset: 'custom', from: toYmd(r.from), to: toYmd(r.to) }
+  return { preset: r.preset }
+}
+
+export function parseStoredRange(raw: unknown, now = new Date()): AppliedRange | null {
+  if (!raw || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown>
+  if (!isPresetId(v.preset)) return null
+  if (v.preset !== 'custom') return { ...resolvePreset(v.preset, now), preset: v.preset }
+  if (typeof v.from !== 'string' || typeof v.to !== 'string') return null
+  if (!parseYmd(v.from) || !parseYmd(v.to)) return null
+  return { ...resolveCustom(v.from, v.to, now), preset: 'custom' }
+}
+
+export function loadStoredRange(now = new Date()): AppliedRange {
+  try {
+    const raw = localStorage.getItem(RANGE_STORAGE_KEY)
+    if (!raw) return defaultRange(now)
+    return parseStoredRange(JSON.parse(raw), now) ?? defaultRange(now)
+  } catch {
+    return defaultRange(now)
+  }
+}
+
+export function saveStoredRange(r: AppliedRange): void {
+  try {
+    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(serializeRange(r)))
+  } catch {
+    /* ignore quota */
+  }
+}

@@ -18,7 +18,7 @@ import SessionList from './components/SessionList.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import TimeRangeBar from './components/TimeRangeBar.vue'
 import TrendChart from './components/TrendChart.vue'
-import { liveRange, presetLabel, resolvePreset, type AppliedRange } from './timeRange'
+import { liveRange, loadStoredRange, presetLabel, saveStoredRange, type AppliedRange } from './timeRange'
 
 type Page = 'dash' | 'settings'
 const POLL_MS = 15_000
@@ -46,8 +46,7 @@ const hideProjects = ref(readHide())
 const err = ref('')
 const loading = ref(false)
 
-const initRange = resolvePreset('7d')
-const applied = ref<AppliedRange>({ ...initRange, preset: '7d' })
+const applied = ref<AppliedRange>(loadStoredRange())
 
 const summary = ref<Summary | null>(null)
 const points = ref<SeriesPoint[]>([])
@@ -149,6 +148,7 @@ function onVisibility() {
 
 function onRangeApply(r: AppliedRange) {
   applied.value = r
+  saveStoredRange(r)
 }
 
 function go(next: Page) {
@@ -220,7 +220,7 @@ function hostLabel(hostId: string, hostname: string): string {
 
     <template v-if="page === 'dash'">
       <div class="toolbar">
-        <TimeRangeBar @apply="onRangeApply" />
+        <TimeRangeBar :applied="applied" @apply="onRangeApply" />
         <div class="filter-pills">
           <FilterPill v-model="source" label="工具" :options="sourceOpts">
             <svg viewBox="0 0 16 16">
