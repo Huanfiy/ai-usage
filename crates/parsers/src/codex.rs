@@ -8,8 +8,8 @@ use serde_json::Value;
 use crate::agg::extract_sessions;
 use crate::cache;
 use crate::util::{
-    collect_jsonl, entries_to_buckets, expand_home, file_sig, guard_hash, parse_ts,
-    project_from_path, to_count_opt, FileSig, TimingEvent, UsageEntry,
+    attach_session_id, collect_jsonl, entries_to_buckets, expand_home, file_sig, guard_hash,
+    parse_ts, project_from_path, to_count_opt, FileSig, TimingEvent, UsageEntry,
 };
 
 const SOURCE: &str = ai_usage_protocol::SOURCE_CODEX;
@@ -83,7 +83,7 @@ impl UsageAdapter for CodexAdapter {
 
         ParseResult {
             buckets: entries_to_buckets(&all_entries),
-            sessions: extract_sessions(&all_events),
+            sessions: extract_sessions(&all_events, &all_entries),
             skipped: false,
             warnings,
             ..ParseResult::default()
@@ -243,6 +243,13 @@ fn is_replay(header: &Header) -> bool {
     header.is_subagent || header.forked_from_id.is_some()
 }
 
+fn session_id_of(header: &Header, path: &Path) -> String {
+    header
+        .session_id
+        .clone()
+        .unwrap_or_else(|| path.to_string_lossy().to_string())
+}
+
 fn cache_current(hit: &FileCache) -> bool {
     hit.algorithm_version == CACHE_VERSION
 }
@@ -252,8 +259,11 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
     let prior = cache::load::<FileCache>(&cache_file).filter(cache_current);
     if let Some(hit) = &prior {
         if cache::sig_unchanged(&hit.sig, &job.sig) {
+            let sid = session_id_of(&hit.header, &job.path);
+            let mut entries = hit.entries.clone();
+            attach_session_id(&mut entries, &sid);
             return Ok(ParsedFile {
-                entries: hit.entries.clone(),
+                entries,
                 events: hit.events.clone(),
             });
         }
@@ -276,6 +286,8 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
     let start = state.parsed_bytes;
     let end = job.sig.size;
     if end == 0 {
+        let sid = session_id_of(&state.header, &job.path);
+        attach_session_id(&mut state.entries, &sid);
         return Ok(ParsedFile {
             entries: state.entries,
             events: state.events,
@@ -415,6 +427,7 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
             cache_read_input_tokens: cached.max(0),
             cache_creation_input_tokens: 0,
             reasoning_output_tokens: reasoning.max(0),
+            session_id: session_id.clone(),
         });
     });
 
@@ -425,6 +438,8 @@ fn parse_file(job: &FileJob, cache_dir: &Path) -> Result<ParsedFile, String> {
         state.guard_hash = hash;
         state.ends_with_newline = ends_nl;
     }
+    let sid = session_id_of(&state.header, &job.path);
+    attach_session_id(&mut state.entries, &sid);
     cache::save(&cache_file, &state);
     Ok(ParsedFile {
         entries: state.entries,

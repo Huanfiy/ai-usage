@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::agg::extract_sessions;
 use crate::cache;
 use crate::util::{
-    entries_to_buckets, expand_home, file_sig, parse_ts, project_from_encoded_dir,
+    attach_session_id, entries_to_buckets, expand_home, file_sig, parse_ts, project_from_encoded_dir,
     project_from_path, read_json_value, to_count_opt, FileSig, TimingEvent, UsageEntry,
 };
 
@@ -44,7 +44,7 @@ impl UsageAdapter for GrokAdapter {
         }
         ParseResult {
             buckets: entries_to_buckets(&entries),
-            sessions: extract_sessions(&events),
+            sessions: extract_sessions(&events, &entries),
             skipped: false,
             warnings,
             ..ParseResult::default()
@@ -126,7 +126,9 @@ fn parse_session(
     let cache_file = cache::cache_path(cache_dir, "grok", &session.path);
     if let Some(hit) = cache::load::<FileCache>(&cache_file) {
         if cache::sig_unchanged(&hit.sig, &sig) {
-            return Ok((hit.entries, hit.events));
+            let mut entries = hit.entries;
+            attach_session_id(&mut entries, &session.id);
+            return Ok((entries, hit.events));
         }
     }
 
@@ -163,6 +165,7 @@ fn parse_session(
                     emit_turn_usage(
                         &mut entries,
                         update.get("usage"),
+                        &session.id,
                         &project,
                         ts,
                         &fallback_model,
@@ -270,6 +273,7 @@ fn parse_session(
 fn emit_turn_usage(
     entries: &mut Vec<UsageEntry>,
     usage: Option<&Value>,
+    session_id: &str,
     project: &str,
     ts: chrono::DateTime<chrono::Utc>,
     fallback_model: &str,
@@ -278,17 +282,18 @@ fn emit_turn_usage(
     if let Some(model_usage) = usage.get("modelUsage").and_then(|v| v.as_object()) {
         if !model_usage.is_empty() {
             for (model, m) in model_usage {
-                push_usage(entries, model, project, ts, m);
+                push_usage(entries, model, session_id, project, ts, m);
             }
             return;
         }
     }
-    push_usage(entries, fallback_model, project, ts, usage);
+    push_usage(entries, fallback_model, session_id, project, ts, usage);
 }
 
 fn push_usage(
     entries: &mut Vec<UsageEntry>,
     model: &str,
+    session_id: &str,
     project: &str,
     ts: chrono::DateTime<chrono::Utc>,
     usage: &Value,
@@ -317,5 +322,6 @@ fn push_usage(
         cache_read_input_tokens: cached,
         cache_creation_input_tokens: cache_write,
         reasoning_output_tokens: reasoning,
+        session_id: session_id.to_string(),
     });
 }

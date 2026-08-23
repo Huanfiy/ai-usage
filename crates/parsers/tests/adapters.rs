@@ -36,6 +36,11 @@ fn claude_dedupes_and_splits_cache_fields() {
     assert_eq!(b.cache_read_input_tokens, 250);
     assert_eq!(result.sessions.len(), 1);
     assert_eq!(result.sessions[0].user_message_count, 2);
+    assert_eq!(result.sessions[0].input_tokens, 15);
+    assert_eq!(result.sessions[0].output_tokens, 33);
+    assert_eq!(result.sessions[0].cache_creation_input_tokens, 100);
+    assert_eq!(result.sessions[0].cache_read_input_tokens, 250);
+    assert_eq!(result.sessions[0].total_tokens, 398);
 }
 
 #[test]
@@ -54,6 +59,16 @@ fn codex_skips_duplicate_token_count() {
     assert_eq!(b.output_tokens, 30);
     assert_eq!(b.reasoning_output_tokens, 15);
     assert_eq!(b.cache_creation_input_tokens, 0);
+    let main = result
+        .sessions
+        .iter()
+        .find(|s| s.session_hash == session_hash_from_id("sess-codex-1"))
+        .unwrap();
+    assert_eq!(main.input_tokens, 80);
+    assert_eq!(main.cache_read_input_tokens, 100);
+    assert_eq!(main.output_tokens, 30);
+    assert_eq!(main.reasoning_output_tokens, 15);
+    assert_eq!(main.total_tokens, 225);
 }
 
 #[test]
@@ -74,6 +89,13 @@ fn codex_replay_files_omit_usage_keep_session() {
     assert!(hashes.contains(&session_hash_from_id("sess-codex-1").as_str()));
     assert!(hashes.contains(&session_hash_from_id("sess-codex-fork").as_str()));
     assert!(hashes.contains(&session_hash_from_id("sess-codex-sub").as_str()));
+    for s in &result.sessions {
+        if s.session_hash == session_hash_from_id("sess-codex-1") {
+            assert_eq!(s.total_tokens, 225);
+        } else {
+            assert_eq!(s.total_tokens, 0);
+        }
+    }
 }
 
 #[test]
@@ -92,6 +114,13 @@ fn grok_splits_model_usage_and_cache() {
     assert_eq!(b.cache_creation_input_tokens, 50);
     assert_eq!(b.output_tokens, 60);
     assert_eq!(b.reasoning_output_tokens, 20);
+    assert_eq!(result.sessions.len(), 1);
+    assert_eq!(result.sessions[0].input_tokens, 600);
+    assert_eq!(result.sessions[0].cache_read_input_tokens, 400);
+    assert_eq!(result.sessions[0].cache_creation_input_tokens, 50);
+    assert_eq!(result.sessions[0].output_tokens, 60);
+    assert_eq!(result.sessions[0].reasoning_output_tokens, 20);
+    assert_eq!(result.sessions[0].total_tokens, 1130);
 }
 
 #[test]

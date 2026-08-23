@@ -87,6 +87,18 @@ pub struct UsageSession {
     pub message_count: i64,
     #[serde(default)]
     pub user_message_count: i64,
+    #[serde(default)]
+    pub input_tokens: i64,
+    #[serde(default)]
+    pub output_tokens: i64,
+    #[serde(default)]
+    pub cache_read_input_tokens: i64,
+    #[serde(default)]
+    pub cache_creation_input_tokens: i64,
+    #[serde(default)]
+    pub reasoning_output_tokens: i64,
+    #[serde(default)]
+    pub total_tokens: i64,
 }
 
 impl UsageBucket {
@@ -160,7 +172,21 @@ impl UsageSession {
         self.active_seconds = self.active_seconds.max(0);
         self.message_count = self.message_count.max(0);
         self.user_message_count = self.user_message_count.max(0);
+        self.input_tokens = self.input_tokens.max(0);
+        self.output_tokens = self.output_tokens.max(0);
+        self.cache_read_input_tokens = self.cache_read_input_tokens.max(0);
+        self.cache_creation_input_tokens = self.cache_creation_input_tokens.max(0);
+        self.reasoning_output_tokens = self.reasoning_output_tokens.max(0);
+        self.total_tokens = self.token_score();
         self
+    }
+
+    pub fn token_score(&self) -> i64 {
+        self.input_tokens
+            + self.output_tokens
+            + self.cache_read_input_tokens
+            + self.cache_creation_input_tokens
+            + self.reasoning_output_tokens
     }
 
     pub fn client_key(&self) -> String {
@@ -176,6 +202,12 @@ impl UsageSession {
             &self.active_seconds.to_string(),
             &self.message_count.to_string(),
             &self.user_message_count.to_string(),
+            &self.input_tokens.to_string(),
+            &self.output_tokens.to_string(),
+            &self.cache_read_input_tokens.to_string(),
+            &self.cache_creation_input_tokens.to_string(),
+            &self.reasoning_output_tokens.to_string(),
+            &self.total_tokens.to_string(),
         ])
     }
 }
@@ -316,6 +348,26 @@ mod tests {
         .normalize();
         assert_eq!(b.content_hash(), b.clone().content_hash());
         assert_eq!(b.total_tokens, 10);
+    }
+
+    #[test]
+    fn session_token_fields_default_and_hash() {
+        let json = r#"{
+            "source":"codex",
+            "project":"demo",
+            "session_hash":"abc",
+            "first_message_at":"2026-01-15T10:00:00Z",
+            "last_message_at":"2026-01-15T10:01:00Z"
+        }"#;
+        let s: UsageSession = serde_json::from_str(json).unwrap();
+        assert_eq!(s.total_tokens, 0);
+        let hashed = s.clone().normalize();
+        assert_eq!(hashed.content_hash(), hashed.clone().content_hash());
+        let mut with_tokens = hashed.clone();
+        with_tokens.input_tokens = 10;
+        with_tokens = with_tokens.normalize();
+        assert_eq!(with_tokens.total_tokens, 10);
+        assert_ne!(hashed.content_hash(), with_tokens.content_hash());
     }
 
     #[test]

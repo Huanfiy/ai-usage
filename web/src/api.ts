@@ -71,6 +71,7 @@ export type SessionRow = {
   active_seconds: number
   message_count: number
   user_message_count: number
+  tokens?: TokenTotals
 }
 
 export type Query = {

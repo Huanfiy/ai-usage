@@ -229,8 +229,10 @@ fn upsert_session(conn: &Connection, host_id: &str, s: &UsageSession, now: &str)
     conn.execute(
         "INSERT INTO usage_sessions(
             host_id, source, session_hash, project, first_message_at, last_message_at,
-            duration_seconds, active_seconds, message_count, user_message_count, updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            duration_seconds, active_seconds, message_count, user_message_count,
+            input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+            reasoning_output_tokens, total_tokens, updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
          ON CONFLICT(host_id, source, session_hash) DO UPDATE SET
             project=excluded.project,
             first_message_at=excluded.first_message_at,
@@ -239,6 +241,12 @@ fn upsert_session(conn: &Connection, host_id: &str, s: &UsageSession, now: &str)
             active_seconds=excluded.active_seconds,
             message_count=excluded.message_count,
             user_message_count=excluded.user_message_count,
+            input_tokens=excluded.input_tokens,
+            output_tokens=excluded.output_tokens,
+            cache_read_input_tokens=excluded.cache_read_input_tokens,
+            cache_creation_input_tokens=excluded.cache_creation_input_tokens,
+            reasoning_output_tokens=excluded.reasoning_output_tokens,
+            total_tokens=excluded.total_tokens,
             updated_at=excluded.updated_at",
         params![
             host_id,
@@ -251,6 +259,12 @@ fn upsert_session(conn: &Connection, host_id: &str, s: &UsageSession, now: &str)
             s.active_seconds,
             s.message_count,
             s.user_message_count,
+            s.input_tokens,
+            s.output_tokens,
+            s.cache_read_input_tokens,
+            s.cache_creation_input_tokens,
+            s.reasoning_output_tokens,
+            s.total_tokens,
             now
         ],
     )?;

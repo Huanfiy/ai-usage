@@ -78,7 +78,7 @@ impl UsageAdapter for ClaudeCodeAdapter {
 
         ParseResult {
             buckets: entries_to_buckets(&entries),
-            sessions: extract_sessions(&events),
+            sessions: extract_sessions(&events, &entries),
             skipped: false,
             warnings,
             ..ParseResult::default()
@@ -239,8 +239,14 @@ fn scan_candidate(
     let cache_file = cache::cache_path(cache_dir, "claude", &cand.path);
     if let Some(hit) = cache::load::<FileCache>(&cache_file) {
         if cache::sig_unchanged(&hit.sig, &sig) {
+            let mut entries = hit.entries;
+            for e in &mut entries {
+                if e.entry.session_id.is_empty() {
+                    e.entry.session_id = cand.session_id.clone();
+                }
+            }
             return Ok(ParsedFile {
-                entries: hit.entries,
+                entries,
                 events: hit.events,
             });
         }
@@ -313,6 +319,7 @@ fn scan_candidate(
                 cache_read_input_tokens: cache_read,
                 cache_creation_input_tokens: cache_write,
                 reasoning_output_tokens: 0,
+                session_id: cand.session_id.clone(),
             },
         });
     });

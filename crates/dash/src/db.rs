@@ -18,6 +18,7 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
+        migrate_session_tokens(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -71,6 +72,12 @@ CREATE TABLE IF NOT EXISTS usage_sessions (
   active_seconds INTEGER NOT NULL,
   message_count INTEGER NOT NULL,
   user_message_count INTEGER NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (host_id, source, session_hash)
 );
@@ -93,6 +100,47 @@ CREATE INDEX IF NOT EXISTS idx_buckets_host ON usage_buckets(host_id, bucket_sta
 CREATE INDEX IF NOT EXISTS idx_rollups_day ON daily_rollups(day);
 CREATE INDEX IF NOT EXISTS idx_sessions_last ON usage_sessions(last_message_at);
 "#;
+
+fn migrate_session_tokens(conn: &Connection) -> Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(usage_sessions)")?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        names
+    };
+    for (name, sql) in [
+        (
+            "input_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "output_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "cache_read_input_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN cache_read_input_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "cache_creation_input_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "reasoning_output_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN reasoning_output_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "total_tokens",
+            "ALTER TABLE usage_sessions ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+    ] {
+        if !existing.contains(name) {
+            conn.execute(sql, [])?;
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -287,6 +335,12 @@ mod tests {
             active_seconds: 40,
             message_count: 4,
             user_message_count: 2,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
         }
     }
 

@@ -63,7 +63,7 @@ mindmap
 两条轨道用途不同：
 
 - **Bucket**（30 min 窗）：费用与趋势的计量单元。维度为 `source × model × project × bucket_start`。`cache_read` 与 `cache_creation` 必须分字段——Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，合并入库后费用无法回补。无 `cache_creation` 概念的源（如 Codex）该字段为 0。
-- **Session**：活跃度与明细列表。只有时间与条数，没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。
+- **Session**：活跃度与明细列表。时间、条数与 token 分项（与 Bucket 五项同口径），没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。Cursor 无 session。Codex fork / sub-agent 仍出条目，token 为 0。
 
 幂等按主机隔离（`host_id` 由服务端 token 映射，不取自 payload）：
 

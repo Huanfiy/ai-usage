@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { SessionRow } from '../api'
-import { fmtDur, fmtTime } from '../format'
+import { fmtDur, fmtTime, fmtTokens } from '../format'
 
 const props = defineProps<{ sessions: SessionRow[] }>()
 
@@ -44,6 +44,12 @@ watch(
 function goto(p: number) {
   page.value = Math.min(totalPages.value, Math.max(1, p))
 }
+
+function tokenHint(s: SessionRow): string {
+  const t = s.tokens
+  if (!t) return ''
+  return `入 ${fmtTokens(t.input)} · 出 ${fmtTokens(t.output)} · 读 ${fmtTokens(t.cache_read)} · 创建 ${fmtTokens(t.cache_creation)} · 推理 ${fmtTokens(t.reasoning)}`
+}
 </script>
 
 <template>
@@ -67,6 +73,7 @@ function goto(p: number) {
           <th>时长</th>
           <th>活跃</th>
           <th>消息</th>
+          <th>Token</th>
         </tr>
       </thead>
       <tbody>
@@ -78,6 +85,7 @@ function goto(p: number) {
           <td>{{ fmtDur(s.duration_seconds) }}</td>
           <td>{{ fmtDur(s.active_seconds) }}</td>
           <td>{{ s.user_message_count }} / {{ s.message_count }}</td>
+          <td :title="tokenHint(s)">{{ fmtTokens(s.tokens?.total ?? 0) }}</td>
         </tr>
       </tbody>
     </table>

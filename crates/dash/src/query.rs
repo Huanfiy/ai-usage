@@ -514,12 +514,15 @@ pub struct SessionRow {
     pub active_seconds: i64,
     pub message_count: i64,
     pub user_message_count: i64,
+    pub tokens: TokenTotals,
 }
 
 pub fn sessions(conn: &Connection, f: &QueryFilter, limit: i64) -> Result<Vec<SessionRow>> {
     let mut sql = String::from(
         "SELECT host_id, source, project, session_hash, first_message_at, last_message_at,
-                duration_seconds, active_seconds, message_count, user_message_count
+                duration_seconds, active_seconds, message_count, user_message_count,
+                input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+                reasoning_output_tokens, total_tokens
          FROM usage_sessions
          WHERE last_message_at >= ? AND last_message_at < ?",
     );
@@ -552,6 +555,14 @@ pub fn sessions(conn: &Connection, f: &QueryFilter, limit: i64) -> Result<Vec<Se
                 active_seconds: r.get(7)?,
                 message_count: r.get(8)?,
                 user_message_count: r.get(9)?,
+                tokens: TokenTotals {
+                    input: r.get(10)?,
+                    output: r.get(11)?,
+                    cache_read: r.get(12)?,
+                    cache_creation: r.get(13)?,
+                    reasoning: r.get(14)?,
+                    total: r.get(15)?,
+                },
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -691,6 +702,12 @@ mod tests {
             active_seconds: active,
             message_count: messages,
             user_message_count: user,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_output_tokens: 0,
+            total_tokens: 0,
         }
     }
 
@@ -747,6 +764,27 @@ mod tests {
             assert_eq!(s.sessions, 1);
             assert_eq!(s.message_count, 10);
             assert_eq!(s.user_message_count, 3);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn sessions_include_token_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let mut s = sample_session("s1", 10, 3, 100, 40);
+            s.input_tokens = 12;
+            s.output_tokens = 5;
+            s.cache_read_input_tokens = 3;
+            seed(c, vec![], vec![s]);
+            let rows = sessions(c, &window(), 10)?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].tokens.input, 12);
+            assert_eq!(rows[0].tokens.output, 5);
+            assert_eq!(rows[0].tokens.cache_read, 3);
+            assert_eq!(rows[0].tokens.total, 20);
             Ok(())
         })
         .unwrap();

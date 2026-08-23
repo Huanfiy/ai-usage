@@ -121,6 +121,9 @@ pub struct UsageEntry {
     pub cache_read_input_tokens: i64,
     pub cache_creation_input_tokens: i64,
     pub reasoning_output_tokens: i64,
+    /// Empty on Cursor (account CSV has no session). Old parser caches default empty.
+    #[serde(default)]
+    pub session_id: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
@@ -165,6 +168,17 @@ pub fn entries_to_buckets(entries: &[UsageEntry]) -> Vec<UsageBucket> {
         b.reasoning_output_tokens += e.reasoning_output_tokens;
     }
     map.into_values().map(|b| b.normalize()).collect()
+}
+
+pub fn attach_session_id(entries: &mut [UsageEntry], session_id: &str) {
+    if session_id.is_empty() {
+        return;
+    }
+    for e in entries {
+        if e.session_id.is_empty() {
+            e.session_id = session_id.to_string();
+        }
+    }
 }
 
 pub fn read_jsonl_limited(

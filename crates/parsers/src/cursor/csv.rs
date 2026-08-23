@@ -67,6 +67,7 @@ pub fn parse_export_csv(text: &str) -> Result<Vec<UsageEntry>, CsvError> {
             cache_read_input_tokens: cache_read,
             cache_creation_input_tokens: cache_write,
             reasoning_output_tokens: 0,
+            session_id: String::new(),
         });
     }
     Ok(entries)
