@@ -54,7 +54,7 @@
 
 **扫描根**：本机 Cursor user-data 里的 `state.vscdb`（Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb` 或 `~/.config/Cursor/…`；macOS Application Support；Windows `%APPDATA%\Cursor`）。可用 `CURSOR_STATE_DB_PATH` 覆盖。有该文件即视为已安装。只读打开，只取 `cursorAuth/accessToken` 与 `cursorAuth/cachedEmail`，禁止拷贝整库，禁止写回。
 
-采集端还可挂额外 access JWT（数据目录 `cursor-accounts.toml`，权限 0600）：不登录 IDE 也能采。本机面板可粘贴 JWT / `WorkosCursorSessionToken`，或上传账号导出 JSON（只提取 `access_token` / `accessToken` 与邮箱）。套餐消耗现拉 `GET cursor.com/api/usage-summary`：API 按 `used/limit` 美分；Auto 按 `autoPercentUsed × breakdown.total` 美分（满额含赠额，因号而异）。内含 / 赠额另标。短缓存后画在面板卡片上，不写入 secrets 文件、不计入 ingest。与当前 IDE 同号时本机 vscdb 优先。v1 不调用 Cursor oauth 续期；JWT `exp` 约 60 天（从签发起算），401 后重新导入。
+采集端还可挂额外 access JWT（数据目录 `cursor-accounts.toml`，权限 0600）：不登录 IDE 也能采。本机面板可粘贴 JWT / `WorkosCursorSessionToken`，或上传账号导出 JSON（只提取 `access_token` / `accessToken` 与邮箱）。套餐消耗现拉 `GET cursor.com/api/usage-summary`：面板卡片 API / Auto 只标百分比；已用取 `plan.used` 美分，赠额另标。短缓存后画在面板卡片上，不写入 secrets 文件、不计入 ingest。与当前 IDE 同号时本机 vscdb 优先。v1 不调用 Cursor oauth 续期；JWT `exp` 约 60 天（从签发起算），401 后重新导入。
 
 **计入**：`GET cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens` 的全量 CSV。`Input (w/o Cache Write)` → `input`；`Input (w/ Cache Write)` → `cache_creation`（两列不相交，禁止折进 `input`）；`Cache Read` → `cache_read`；`Output Tokens` → `output`。`project = unknown`。五项全 0 的行跳过。`Cost` 忽略。每个桶带同一 `account_hash` / `account_label`（邮箱优先 `cachedEmail`，否则 JWT `email`，再否则短 hash）。CSV 禁止按时间窗截断。
 

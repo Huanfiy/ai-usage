@@ -512,10 +512,10 @@
       </div>
       <div class="fields even">
         <label class="field" for="interval_local">本地工具间隔
-          <input id="interval_local" type="text" placeholder="5m" />
+          <input id="interval_local" type="text" placeholder="5m" title="按钟面对齐，5m 在 :00/:05/:10 上报" />
         </label>
         <label class="field" for="interval_cursor">Cursor 间隔
-          <input id="interval_cursor" type="text" placeholder="30m" />
+          <input id="interval_cursor" type="text" placeholder="30m" title="按钟面对齐，30m 在 :00/:30 上报" />
         </label>
       </div>
       <div class="cfg-foot">
@@ -604,30 +604,18 @@
       if (cents == null || Number.isNaN(Number(cents))) return null;
       return "$" + (Number(cents) / 100).toFixed(2);
     }
-    function usdPair(used, limit) {
-      const a = fmtUsd(used);
-      const b = fmtUsd(limit);
-      if (a && b) return a + " / " + b;
-      return a || b || "";
-    }
-    function meter(label, pct, used, limit) {
-      if (pct == null && used == null && limit == null) return null;
+    function meter(label, pct) {
+      if (pct == null) return null;
       const box = el("div", "meter");
       const row = el("div", "row");
       row.appendChild(el("span", "", label));
-      const right = [];
-      const money = usdPair(used, limit);
-      if (money) right.push(money);
-      if (pct != null) right.push(fmtPct(pct));
-      row.appendChild(el("b", "", right.join(" · ")));
+      row.appendChild(el("b", "", fmtPct(pct)));
       box.appendChild(row);
-      if (pct != null) {
-        const bar = el("div", "bar" + (pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""));
-        const i = el("i");
-        i.style.width = Math.max(0, Math.min(100, pct)) + "%";
-        bar.appendChild(i);
-        box.appendChild(bar);
-      }
+      const bar = el("div", "bar" + (pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""));
+      const i = el("i");
+      i.style.width = Math.max(0, Math.min(100, pct)) + "%";
+      bar.appendChild(i);
+      box.appendChild(bar);
       return box;
     }
     function setMsg(id, text, kind) {
@@ -731,14 +719,14 @@
       top.appendChild(chips);
       card.appendChild(top);
 
-      const apiMeter = meter("API", a.api_percent, a.plan_used, a.plan_limit);
-      const autoMeter = meter("Auto", a.auto_percent, a.auto_used, a.auto_limit);
-      if (apiMeter || autoMeter || a.billing_cycle_end || a.bonus_cents || a.included_cents) {
+      const apiMeter = meter("API", a.api_percent);
+      const autoMeter = meter("Auto", a.auto_percent);
+      if (apiMeter || autoMeter || a.billing_cycle_end || a.bonus_cents || a.plan_used != null) {
         const box = el("div", "usage");
         if (apiMeter) box.appendChild(apiMeter);
         if (autoMeter) box.appendChild(autoMeter);
         const bits = [];
-        if (a.included_cents != null) bits.push("内含 " + fmtUsd(a.included_cents));
+        if (a.plan_used != null) bits.push("已用 " + fmtUsd(a.plan_used));
         if (a.bonus_cents) bits.push("赠额 " + fmtUsd(a.bonus_cents));
         if (a.billing_cycle_end) bits.push("账期至 " + String(a.billing_cycle_end).slice(0, 10));
         if (bits.length) box.appendChild(el("div", "meta", bits.join(" · ")));
