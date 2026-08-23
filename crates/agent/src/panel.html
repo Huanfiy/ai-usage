@@ -274,6 +274,19 @@
     .icon-btn svg { width: 15px; height: 15px; display: block; }
     .icon-btn.spin svg { animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .icon-btn.pulse {
+      color: var(--mint);
+      border-color: var(--mint);
+      transition: color 40ms ease-out, border-color 40ms ease-out, background 40ms ease-out;
+      animation: json-breathe 0.75s ease-in-out 2;
+    }
+    @keyframes json-breathe {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(62, 224, 179, 0); }
+      50% { box-shadow: 0 0 0 6px rgba(62, 224, 179, 0.32); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .icon-btn.pulse { animation: none; }
+    }
     .json-head {
       display: flex;
       align-items: flex-start;
@@ -567,6 +580,9 @@
     let fileName = "";
     let lastStatus = null;
     let jsonHash = null;
+    const usageFp = new Map();
+    const usagePulseUntil = new Map();
+    const usageForcePulse = new Set();
     const ICONS = {
       refresh: [
         "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",
@@ -694,7 +710,22 @@
       wrap.appendChild(img);
       return wrap;
     }
-    function renderAccount(a) {
+    function usageFingerprint(a) {
+      return a.usage_raw ? JSON.stringify(a.usage_raw) : "";
+    }
+    function markUsagePulse(hash, fp) {
+      const prev = usageFp.get(hash);
+      usageFp.set(hash, fp);
+      const forced = usageForcePulse.delete(hash);
+      if (forced || (prev !== undefined && prev !== fp)) {
+        usagePulseUntil.set(hash, Date.now() + 2000);
+      }
+      const until = usagePulseUntil.get(hash) || 0;
+      if (Date.now() < until) return true;
+      usagePulseUntil.delete(hash);
+      return false;
+    }
+    function renderAccount(a, pulseJson) {
       const card = el("article", "acct");
       const top = el("div", "acct-top");
       const head = el("div", "acct-head");
@@ -702,7 +733,17 @@
       const tools = el("div", "acct-tools");
       const refreshBtn = iconBtn("refresh", "刷新套餐用量");
       refreshBtn.onclick = () => refreshAccount(a.account_hash, refreshBtn);
-      const jsonBtn = iconBtn("braces", "查看原始 JSON");
+      const jsonBtn = iconBtn("braces", pulseJson ? "用量已更新" : "查看原始 JSON");
+      if (pulseJson) {
+        jsonBtn.classList.add("pulse");
+        const clearPulse = () => {
+          jsonBtn.classList.remove("pulse");
+          jsonBtn.title = "查看原始 JSON";
+          jsonBtn.setAttribute("aria-label", "查看原始 JSON");
+        };
+        jsonBtn.addEventListener("animationend", clearPulse, { once: true });
+        setTimeout(clearPulse, 1800);
+      }
       jsonBtn.onclick = () => openJson(a);
       tools.appendChild(refreshBtn);
       tools.appendChild(jsonBtn);
@@ -782,10 +823,21 @@
       const grid = $("accounts");
       grid.innerHTML = "";
       const list = s.cursor_accounts || [];
+      const live = new Set(list.map((a) => a.account_hash));
+      for (const hash of [...usageFp.keys()]) {
+        if (!live.has(hash)) {
+          usageFp.delete(hash);
+          usagePulseUntil.delete(hash);
+          usageForcePulse.delete(hash);
+        }
+      }
       if (!list.length) {
         grid.appendChild(el("div", "empty", "尚未挂 Cursor 账号。点右上角 + 粘贴凭证或上传 JSON。"));
       } else {
-        list.forEach((a) => grid.appendChild(renderAccount(a)));
+        list.forEach((a) => {
+          const pulse = markUsagePulse(a.account_hash, usageFingerprint(a));
+          grid.appendChild(renderAccount(a, pulse));
+        });
       }
       if (jsonHash && $("json-dlg").open) {
         const a = list.find((x) => x.account_hash === jsonHash);
@@ -803,6 +855,7 @@
       btn.classList.add("spin");
       try {
         await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/refresh", { method: "POST" });
+        usageForcePulse.add(hash);
         await refresh();
       } catch (e) {
         setMsg("acct-msg", e.message, "err");
