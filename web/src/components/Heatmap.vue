@@ -26,17 +26,32 @@ function mix(
   return `#${hex(r)}${hex(g)}${hex(b)}`
 }
 
-function cellFill(v: number, max: number): string {
-  if (v <= 0 || max <= 0) return mix(COL_EMPTY, COL_EMPTY, 0)
-  const t = Math.sqrt(v / max)
-  return mix(COL_EMPTY, COL_MINT, 0.28 + 0.72 * t)
+const SCALE_LO = 1e5
+const SCALE_HI = 1e9
+const SCALE_TICKS = [
+  { v: 1e5, label: '100k' },
+  { v: 1e6, label: '1M' },
+  { v: 1e7, label: '10M' },
+  { v: 1e8, label: '100M' },
+  { v: 1e9, label: '1B' },
+] as const
+
+function scaleT(v: number): number {
+  if (v <= 0) return Number.NEGATIVE_INFINITY
+  return (Math.log10(v) - Math.log10(SCALE_LO)) / (Math.log10(SCALE_HI) - Math.log10(SCALE_LO))
+}
+
+function cellFill(v: number): string {
+  if (v <= 0) return mix(COL_EMPTY, COL_EMPTY, 0)
+  const u = Math.min(1, Math.max(0, 0.22 + 0.78 * scaleT(v)))
+  return mix(COL_EMPTY, COL_MINT, u)
 }
 
 const layout = {
   padL: 22,
   padT: 16,
   padR: 8,
-  padB: 22,
+  padB: 8,
   cell: 14,
   gap: 3,
 }
@@ -55,12 +70,23 @@ const grid = computed(() => {
     idx = ((idx % 168) + 168) % 168
     g[Math.floor(idx / 24)][idx % 24] += Number(c.tokens) || 0
   }
-  const max = Math.max(0, ...g.flat())
-  return { g, max }
+  return { g }
 })
 
 const hourLabels = [0, 6, 12, 18]
-const legendStops = [0, 0.33, 0.66, 1]
+const footPad = {
+  marginLeft: `${(layout.padL / svgW) * 100}%`,
+  marginRight: `${(layout.padR / svgW) * 100}%`,
+}
+const scaleCss = (() => {
+  const n = 24
+  const stops = Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1)
+    const v = SCALE_LO * 10 ** (t * 4)
+    return `${cellFill(v)} ${(t * 100).toFixed(1)}%`
+  })
+  return `linear-gradient(90deg, ${stops.join(', ')})`
+})()
 
 const hover = ref<{ di: number; hi: number; v: number } | null>(null)
 const tipPos = ref({ x: 0, y: 0 })
@@ -140,23 +166,19 @@ function onMove(ev: MouseEvent) {
             :width="layout.cell"
             :height="layout.cell"
             rx="2"
-            :fill="cellFill(v, grid.max)"
+            :fill="cellFill(v)"
             :class="{ on: hover?.di === di && hover?.hi === hi }"
           />
         </g>
-        <text class="axis" :x="layout.padL" :y="svgH - 6">少</text>
-        <rect
-          v-for="(t, i) in legendStops"
-          :key="'lg' + i"
-          :x="layout.padL + 18 + i * (layout.cell + 2)"
-          :y="svgH - 16"
-          :width="layout.cell"
-          :height="10"
-          rx="2"
-          :fill="cellFill(t === 0 ? 0 : t, 1)"
-        />
-        <text class="axis" :x="layout.padL + 18 + 4 * (layout.cell + 2) + 4" :y="svgH - 6">多</text>
       </svg>
+      <div class="heat-foot" :style="footPad">
+        <div class="heat-scale-col">
+          <span class="heat-scale" :style="{ background: scaleCss }" aria-hidden="true" />
+          <div class="heat-ticks">
+            <span v-for="tick in SCALE_TICKS" :key="tick.label">{{ tick.label }}</span>
+          </div>
+        </div>
+      </div>
       <div v-if="hover" class="tip" :style="{ left: tipPos.x + 'px', top: tipPos.y + 'px' }">
         <p class="tip-h">周{{ DAYS[hover.di] }} {{ hourLabel(hover.hi) }}</p>
         <div class="tip-row">Token {{ fmtTokens(hover.v) }}</div>
@@ -194,6 +216,32 @@ function onMove(ev: MouseEvent) {
   font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.04em;
+}
+.heat-foot {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+  min-width: 0;
+}
+.heat-scale-col {
+  flex: 1;
+  min-width: 0;
+}
+.heat-scale {
+  display: block;
+  width: 100%;
+  height: 8px;
+  border-radius: 99px;
+}
+.heat-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 .tip {
   position: absolute;
