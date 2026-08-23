@@ -9,6 +9,7 @@ const PAGE_SIZES = [10, 20, 50]
 const pageSize = ref(10)
 const page = ref(1)
 const tokenTip = ref<string | null>(null)
+const colTip = ref<string | null>(null)
 
 const PARTS: { key: keyof TokenTotals; name: string; color: string }[] = [
   { key: 'input', name: '入', color: '#3b82f6' },
@@ -16,6 +17,43 @@ const PARTS: { key: keyof TokenTotals; name: string; color: string }[] = [
   { key: 'cache_read', name: '读', color: '#a855f7' },
   { key: 'cache_creation', name: '创建', color: '#f97316' },
   { key: 'reasoning', name: '推理', color: '#e8b15a' },
+]
+
+const COL_TIPS: {
+  key: string
+  label: string
+  title: string
+  body: string
+  end?: boolean
+  parts?: boolean
+}[] = [
+  {
+    key: 'duration',
+    label: '时长',
+    title: '时长',
+    body: '首条到末条消息的墙钟跨度。中间空闲也算进去，所以通常长于活跃。',
+  },
+  {
+    key: 'active',
+    label: '活跃',
+    title: '活跃',
+    body: '各轮用户消息之后，模型实际在出回复的时间合计。等人下一条不算。',
+  },
+  {
+    key: 'messages',
+    label: '消息',
+    title: '消息',
+    body: '用户消息 / 全部消息。左边是用户轮次，右边含助手与其它角色事件。',
+    end: true,
+  },
+  {
+    key: 'tokens',
+    label: 'Token',
+    title: 'Token',
+    body: '本会话五项合计。单元格可再悬停看数量。Codex 子会话可能为 0。',
+    end: true,
+    parts: true,
+  },
 ]
 
 const tzByHost = computed(() => {
@@ -82,7 +120,7 @@ function tipBelow(s: SessionRow): boolean {
 </script>
 
 <template>
-  <section class="card" :class="{ 'has-tip': tokenTip }">
+  <section class="card" :class="{ 'has-tip': tokenTip || colTip }">
     <div class="card-head">
       <h2>会话列表</h2>
       <label class="page-size">
@@ -98,10 +136,25 @@ function tipBelow(s: SessionRow): boolean {
           <th>工具</th>
           <th>项目</th>
           <th>时间</th>
-          <th>时长</th>
-          <th>活跃</th>
-          <th>消息</th>
-          <th>Token</th>
+          <th v-for="c in COL_TIPS" :key="c.key">
+            <span
+              class="col-label"
+              @mouseenter="colTip = c.key"
+              @mouseleave="colTip = null"
+            >
+              {{ c.label }}
+              <div v-if="colTip === c.key" class="tip below col" :class="{ end: c.end }">
+                <p class="tip-h">{{ c.title }}</p>
+                <p class="tip-p">{{ c.body }}</p>
+                <template v-if="c.parts">
+                  <div v-for="p in PARTS" :key="p.key" class="tip-row">
+                    <i :style="{ background: p.color }" />
+                    <span>{{ p.name }}</span>
+                  </div>
+                </template>
+              </div>
+            </span>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -165,9 +218,23 @@ function tipBelow(s: SessionRow): boolean {
   position: relative;
   cursor: default;
 }
+.col-label {
+  position: relative;
+  display: inline-block;
+  border-bottom: 1px dashed color-mix(in srgb, var(--muted) 60%, transparent);
+  cursor: help;
+}
 .tip.below {
   bottom: auto;
   top: calc(100% + 6px);
+}
+.tip.col {
+  min-width: 196px;
+  max-width: 240px;
+}
+.tip.col:not(.end) {
+  left: 0;
+  right: auto;
 }
 .tip {
   position: absolute;
@@ -188,6 +255,15 @@ function tipBelow(s: SessionRow): boolean {
   margin: 0 0 6px;
   font-weight: 600;
   color: var(--text);
+}
+.tip-p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-weight: 400;
+}
+.tip-p + .tip-row {
+  margin-top: 8px;
 }
 .tip-row {
   display: grid;
