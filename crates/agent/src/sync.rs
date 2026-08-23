@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use crate::config::AgentConfig;
+use crate::config::{self, AgentConfig, Destination};
 use crate::state::SyncState;
 
 const PARSER_CONCURRENCY: usize = 4;
@@ -23,6 +23,31 @@ pub fn local_source_ids() -> [&'static str; 3] {
         ai_usage_protocol::SOURCE_CODEX,
         ai_usage_protocol::SOURCE_GROK,
     ]
+}
+
+#[derive(Clone, Copy)]
+pub struct SyncOpts<'a> {
+    pub only_sources: Option<&'a HashSet<String>>,
+    pub only_url: Option<&'a str>,
+    pub full: bool,
+}
+
+impl<'a> SyncOpts<'a> {
+    pub fn all() -> Self {
+        Self {
+            only_sources: None,
+            only_url: None,
+            full: false,
+        }
+    }
+
+    pub fn sources(only: &'a HashSet<String>) -> Self {
+        Self {
+            only_sources: Some(only),
+            only_url: None,
+            full: false,
+        }
+    }
 }
 
 pub struct SyncReport {
@@ -36,14 +61,14 @@ pub struct SyncReport {
 }
 
 pub fn run_sync(cfg: &AgentConfig, data_dir: &Path, quiet: bool) -> Result<SyncReport> {
-    run_sync_filtered(cfg, data_dir, quiet, None)
+    run_sync_filtered(cfg, data_dir, quiet, SyncOpts::all())
 }
 
 pub fn run_sync_filtered(
     cfg: &AgentConfig,
     data_dir: &Path,
     quiet: bool,
-    only: Option<&HashSet<String>>,
+    opts: SyncOpts<'_>,
 ) -> Result<SyncReport> {
     let cache_dir = data_dir.join("cache");
     std::fs::create_dir_all(&cache_dir)?;
@@ -59,7 +84,7 @@ pub fn run_sync_filtered(
         },
     };
 
-    let parsed = if let Some(only) = only {
+    let parsed = if let Some(only) = opts.only_sources {
         let adapters: Vec<_> = default_adapters()
             .into_iter()
             .filter(|a| only.contains(a.id()))
@@ -112,8 +137,107 @@ pub fn run_sync_filtered(
         all_buckets = reaggregate(all_buckets);
     }
 
-    let state_path = data_dir.join("state.json");
-    let mut state = SyncState::load(&state_path);
+    let dests = select_dests(cfg, opts.only_url)?;
+    let primary = cfg.destinations().first().map(|d| d.url.clone());
+    let mut ingested = 0u64;
+    let mut sessions_synced = 0u64;
+    let mut changed_buckets = 0usize;
+    let mut changed_sessions = 0usize;
+    let mut protected = 0u64;
+    let mut errors = Vec::new();
+
+    for dest in &dests {
+        let is_primary = primary.as_deref() == Some(dest.url.as_str());
+        match push_dest(
+            dest,
+            &cfg.hostname,
+            data_dir,
+            is_primary,
+            &all_buckets,
+            &all_sessions,
+            &ok_sources,
+            &account_prune,
+            opts.full,
+            quiet,
+        ) {
+            Ok(part) => {
+                ingested += part.ingested;
+                sessions_synced += part.sessions;
+                changed_buckets += part.changed_buckets;
+                changed_sessions += part.changed_sessions;
+                protected += part.protected;
+            }
+            Err(err) => errors.push(format!("{}: {err:#}", dest.url)),
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!("{}", errors.join("; "));
+    }
+    if changed_buckets + changed_sessions == 0 && !quiet {
+        eprintln!("无新增数据。");
+    }
+
+    Ok(SyncReport {
+        ingested,
+        sessions: sessions_synced,
+        changed_buckets,
+        changed_sessions,
+        parser_lines,
+        warnings,
+        protected,
+    })
+}
+
+struct DestPush {
+    ingested: u64,
+    sessions: u64,
+    changed_buckets: usize,
+    changed_sessions: usize,
+    protected: u64,
+}
+
+fn select_dests(cfg: &AgentConfig, only_url: Option<&str>) -> Result<Vec<Destination>> {
+    let dests = cfg.destinations();
+    if dests.is_empty() {
+        anyhow::bail!("没有配置看板地址");
+    }
+    if let Some(raw) = only_url {
+        let key = config::normalize_url(raw);
+        let found: Vec<_> = dests.into_iter().filter(|d| d.url == key).collect();
+        if found.is_empty() {
+            anyhow::bail!("未配置看板地址 {key}");
+        }
+        return Ok(found);
+    }
+    Ok(dests)
+}
+
+fn load_dest_state(data_dir: &Path, dest: &Destination, is_primary: bool) -> (SyncState, std::path::PathBuf) {
+    let path = config::dest_state_path(data_dir, &dest.url);
+    if path.exists() {
+        return (SyncState::load(&path), path);
+    }
+    let legacy = data_dir.join("state.json");
+    if is_primary && legacy.exists() {
+        return (SyncState::load(&legacy), path);
+    }
+    (SyncState::default(), path)
+}
+
+fn push_dest(
+    dest: &Destination,
+    hostname: &str,
+    data_dir: &Path,
+    is_primary: bool,
+    all_buckets: &[UsageBucket],
+    all_sessions: &[UsageSession],
+    ok_sources: &HashSet<String>,
+    account_prune: &HashMap<String, (HashSet<String>, HashSet<String>)>,
+    full: bool,
+    quiet: bool,
+) -> Result<DestPush> {
+    let (mut state, state_path) = load_dest_state(data_dir, dest, is_primary);
     let mut changed_buckets = Vec::new();
     let mut changed_sessions = Vec::new();
     let mut pending_buckets = HashMap::new();
@@ -122,47 +246,48 @@ pub fn run_sync_filtered(
     let mut live_sessions = HashSet::new();
 
     for b in all_buckets {
-        let b = b.normalize();
+        let b = b.clone().normalize();
         let key = b.client_key();
         let hash = b.content_hash();
         live_buckets.insert(key.clone());
-        if state.buckets.get(&key).map(|s| s.as_str()) == Some(hash.as_str()) {
+        let same = state.buckets.get(&key).map(|s| s.as_str()) == Some(hash.as_str());
+        if !full && same {
             continue;
         }
         pending_buckets.insert(key, hash);
         changed_buckets.push(b);
     }
     for s in all_sessions {
-        let s = s.normalize();
+        let s = s.clone().normalize();
         let key = s.client_key();
         let hash = s.content_hash();
         live_sessions.insert(key.clone());
-        if state.sessions.get(&key).map(|h| h.as_str()) == Some(hash.as_str()) {
+        let same = state.sessions.get(&key).map(|h| h.as_str()) == Some(hash.as_str());
+        if !full && same {
             continue;
         }
         pending_sessions.insert(key, hash);
         changed_sessions.push(s);
     }
 
-    state.prune(&live_buckets, &live_sessions, &ok_sources, &account_prune);
+    state.prune(&live_buckets, &live_sessions, ok_sources, account_prune);
     state.save(&state_path)?;
 
     if changed_buckets.is_empty() && changed_sessions.is_empty() {
-        if !quiet {
-            eprintln!("无新增数据。");
-        }
-        return Ok(SyncReport {
+        return Ok(DestPush {
             ingested: 0,
             sessions: 0,
             changed_buckets: 0,
             changed_sessions: 0,
-            parser_lines,
-            warnings,
             protected: 0,
         });
     }
 
-    let url = format!("{}/v1/ingest", cfg.url.trim_end_matches('/'));
+    if !quiet && full {
+        eprintln!("全量上报 {} …", dest.url);
+    }
+
+    let url = format!("{}/v1/ingest", dest.url);
     let mut ingested = 0u64;
     let mut sessions_synced = 0u64;
     let mut protected = 0u64;
@@ -185,13 +310,13 @@ pub fn run_sync_filtered(
             .collect();
         let req = IngestRequest {
             schema_version: SCHEMA_VERSION,
-            hostname: Some(cfg.hostname.clone()),
+            hostname: Some(hostname.to_string()),
             agent_version: Some(env!("CARGO_PKG_VERSION").into()),
             timezone: Some(chrono::Local::now().format("%:z").to_string()),
             buckets: batch.clone(),
             sessions: sess.clone(),
         };
-        let resp = post_ingest(&url, &cfg.token, &req)?;
+        let resp = post_ingest(&url, &dest.token, &req)?;
         ingested += resp.ingested;
         sessions_synced += resp.sessions;
         protected += resp.protected.buckets;
@@ -212,13 +337,11 @@ pub fn run_sync_filtered(
         state.save(&state_path)?;
     }
 
-    Ok(SyncReport {
+    Ok(DestPush {
         ingested,
         sessions: sessions_synced,
         changed_buckets: changed_buckets.len(),
         changed_sessions: changed_sessions.len(),
-        parser_lines,
-        warnings,
         protected,
     })
 }
@@ -295,5 +418,30 @@ fn http_err(err: ureq::Error) -> anyhow::Error {
             anyhow::anyhow!("HTTP {code}: {text}")
         }
         other => other.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AgentConfig;
+
+    #[test]
+    fn select_dests_filters_url() {
+        let mut cfg = AgentConfig::new(
+            "http://127.0.0.1:3847".into(),
+            "t1".into(),
+            "h".into(),
+            true,
+        );
+        cfg.set_destinations(vec![
+            Destination::new("http://127.0.0.1:3847", "t1"),
+            Destination::new("http://10.0.0.2:3847", "t2"),
+        ]);
+        let one = select_dests(&cfg, Some("http://10.0.0.2:3847/")).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].token, "t2");
+        assert!(select_dests(&cfg, Some("http://nope:1")).is_err());
+        assert_eq!(select_dests(&cfg, None).unwrap().len(), 2);
     }
 }

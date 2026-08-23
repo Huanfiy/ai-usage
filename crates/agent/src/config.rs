@@ -7,10 +7,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::xdg;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Destination {
     pub url: String,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// 旧单地址字段；与 `destinations` 并存时以 `destinations` 为准，保存时回写成首条。
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub destinations: Vec<Destination>,
     #[serde(default)]
     pub hostname: String,
     #[serde(default = "default_upload_project")]
@@ -39,11 +50,26 @@ pub fn default_bind() -> String {
     "127.0.0.1:3848".into()
 }
 
+pub fn normalize_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
+impl Destination {
+    pub fn new(url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            url: normalize_url(&url.into()),
+            token: token.into(),
+        }
+    }
+}
+
 impl AgentConfig {
     pub fn new(url: String, token: String, hostname: String, upload_project: bool) -> Self {
+        let dest = Destination::new(url, token);
         Self {
-            url,
-            token,
+            url: dest.url.clone(),
+            token: dest.token.clone(),
+            destinations: vec![dest],
             hostname,
             upload_project,
             interval_local: default_interval_local(),
@@ -52,10 +78,45 @@ impl AgentConfig {
         }
     }
 
+    pub fn destinations(&self) -> Vec<Destination> {
+        if !self.destinations.is_empty() {
+            return self
+                .destinations
+                .iter()
+                .map(|d| Destination::new(&d.url, &d.token))
+                .collect();
+        }
+        if !self.url.trim().is_empty() {
+            return vec![Destination::new(&self.url, &self.token)];
+        }
+        Vec::new()
+    }
+
+    pub fn set_destinations(&mut self, dests: Vec<Destination>) {
+        let dests: Vec<Destination> = dests
+            .into_iter()
+            .map(|d| Destination::new(d.url, d.token))
+            .collect();
+        if let Some(first) = dests.first() {
+            self.url = first.url.clone();
+            self.token = first.token.clone();
+        } else {
+            self.url.clear();
+            self.token.clear();
+        }
+        self.destinations = dests;
+    }
+
+    pub fn find_dest(&self, url: &str) -> Option<Destination> {
+        let key = normalize_url(url);
+        self.destinations().into_iter().find(|d| d.url == key)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("读取配置失败: {}", path.display()))?;
-        let cfg: Self = toml::from_str(&raw).context("解析 agent.toml 失败")?;
+        let mut cfg: Self = toml::from_str(&raw).context("解析 agent.toml 失败")?;
+        cfg.set_destinations(cfg.destinations());
         cfg.validate()?;
         Ok(cfg)
     }
@@ -73,8 +134,18 @@ impl AgentConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.token.trim().is_empty() || self.url.trim().is_empty() {
+        let dests = self.destinations();
+        if dests.is_empty() {
             anyhow::bail!("配置不完整，请先运行 `ai-usage-agent init`");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for d in &dests {
+            if d.url.is_empty() || d.token.trim().is_empty() {
+                anyhow::bail!("配置不完整，请先运行 `ai-usage-agent init`");
+            }
+            if !seen.insert(d.url.clone()) {
+                anyhow::bail!("看板地址重复: {}", d.url);
+            }
         }
         parse_interval(&self.interval_local).context("interval_local")?;
         parse_interval(&self.interval_cursor).context("interval_cursor")?;
@@ -93,6 +164,17 @@ impl AgentConfig {
     pub fn bind_addr(&self) -> Result<SocketAddr> {
         require_loopback(&self.bind)
     }
+}
+
+/// 目的地增量 state 文件名：`state-<sha256(url)[:16]>.json`。
+pub fn dest_state_key(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(normalize_url(url).as_bytes());
+    hex::encode(&digest[..16])
+}
+
+pub fn dest_state_path(data_dir: &Path, url: &str) -> PathBuf {
+    data_dir.join(format!("state-{}.json", dest_state_key(url)))
 }
 
 pub fn parse_interval(s: &str) -> Result<Duration> {
@@ -172,6 +254,60 @@ mod tests {
         assert_eq!(cfg.interval_local, "5m");
         assert_eq!(cfg.interval_cursor, "30m");
         assert_eq!(cfg.bind, "127.0.0.1:3848");
+        assert_eq!(cfg.destinations().len(), 1);
+        assert_eq!(cfg.destinations()[0].url, "http://127.0.0.1:3847");
+        assert_eq!(cfg.destinations()[0].token, "aiu_testtoken");
+    }
+
+    #[test]
+    fn destinations_toml_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.toml");
+        let mut cfg = AgentConfig::new(
+            "http://127.0.0.1:3847".into(),
+            "aiu_a".into(),
+            "host".into(),
+            true,
+        );
+        cfg.set_destinations(vec![
+            Destination::new("http://127.0.0.1:3847/", "aiu_a"),
+            Destination::new("http://10.0.0.2:3847", "aiu_b"),
+        ]);
+        cfg.save(&path).unwrap();
+        let loaded = AgentConfig::load(&path).unwrap();
+        let dests = loaded.destinations();
+        assert_eq!(dests.len(), 2);
+        assert_eq!(dests[0].url, "http://127.0.0.1:3847");
+        assert_eq!(dests[1].token, "aiu_b");
+        assert_eq!(loaded.url, "http://127.0.0.1:3847");
+        assert_eq!(loaded.token, "aiu_a");
+    }
+
+    #[test]
+    fn rejects_duplicate_urls() {
+        let mut cfg = AgentConfig::new(
+            "http://127.0.0.1:3847".into(),
+            "aiu_a".into(),
+            "host".into(),
+            true,
+        );
+        cfg.destinations = vec![
+            Destination::new("http://127.0.0.1:3847/", "aiu_a"),
+            Destination::new("http://127.0.0.1:3847", "aiu_b"),
+        ];
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn dest_state_key_stable_after_slash() {
+        assert_eq!(
+            dest_state_key("http://127.0.0.1:3847/"),
+            dest_state_key("http://127.0.0.1:3847")
+        );
+        assert_ne!(
+            dest_state_key("http://127.0.0.1:3847"),
+            dest_state_key("http://127.0.0.1:3848")
+        );
     }
 
     #[test]

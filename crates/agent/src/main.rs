@@ -93,7 +93,15 @@ fn run() -> Result<()> {
             cfg.save(&config_path)?;
             std::fs::create_dir_all(&data_dir)?;
             println!("已写入 {}", config_path.display());
-            println!("看板: {}   主机显示名: {}", cfg.url, cfg.hostname);
+            println!(
+                "看板: {}   主机显示名: {}",
+                cfg.destinations()
+                    .into_iter()
+                    .map(|d| d.url)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                cfg.hostname
+            );
             if !no_sync {
                 do_sync(&cfg, &data_dir)?;
             }
@@ -150,12 +158,15 @@ fn status(config_path: &Path, data_dir: &Path) -> Result<()> {
     println!("data:   {}", data_dir.display());
     match AgentConfig::load(config_path) {
         Ok(cfg) => {
-            println!("url:      {}", cfg.url);
+            for (i, dest) in cfg.destinations().into_iter().enumerate() {
+                let label = if i == 0 { "url" } else { "url+" };
+                println!("{label:<9} {}", dest.url);
+                println!(
+                    "token:    {}…",
+                    dest.token.chars().take(12).collect::<String>()
+                );
+            }
             println!("hostname: {}", cfg.hostname);
-            println!(
-                "token:    {}…",
-                cfg.token.chars().take(12).collect::<String>()
-            );
             println!(
                 "interval: 本地 {} · Cursor {}",
                 cfg.interval_local, cfg.interval_cursor

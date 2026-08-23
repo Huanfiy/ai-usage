@@ -14,7 +14,7 @@ use ai_usage_parsers::{
     CursorTokenPreview, ParseCtx,
 };
 
-use crate::config::AgentConfig;
+use crate::config::{self, AgentConfig, Destination};
 use crate::cursor_accounts::{self, AccountView, CursorAccountsFile};
 
 const HTML: &str = include_str!("panel.html");
@@ -45,7 +45,13 @@ struct Inner {
     cfg: AgentConfig,
     last_sync_agent: Option<LastSyncView>,
     last_sync_cursor: Option<LastSyncView>,
-    sync_requested: bool,
+    sync_jobs: Vec<SyncJob>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncJob {
+    pub url: Option<String>,
+    pub full: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,7 +86,7 @@ impl PanelState {
                 cfg,
                 last_sync_agent: None,
                 last_sync_cursor: None,
-                sync_requested: false,
+                sync_jobs: Vec::new(),
             }),
             wake: Condvar::new(),
             usage_cache: Mutex::new(HashMap::new()),
@@ -91,9 +97,9 @@ impl PanelState {
         self.inner.lock().expect("panel state").cfg.clone()
     }
 
-    pub fn request_sync(&self) {
+    pub fn enqueue_sync(&self, job: SyncJob) {
         let mut g = self.inner.lock().expect("panel state");
-        g.sync_requested = true;
+        g.sync_jobs.push(job);
         self.wake.notify_all();
         drop(g);
         self.usage_cache.lock().expect("usage cache").clear();
@@ -133,16 +139,14 @@ impl PanelState {
         }
     }
 
-    pub fn take_sync_request(&self) -> bool {
+    pub fn take_sync_jobs(&self) -> Vec<SyncJob> {
         let mut g = self.inner.lock().expect("panel state");
-        let v = g.sync_requested;
-        g.sync_requested = false;
-        v
+        std::mem::take(&mut g.sync_jobs)
     }
 
     pub fn wait_timeout(&self, timeout: Duration) {
         let g = self.inner.lock().expect("panel state");
-        if g.sync_requested {
+        if !g.sync_jobs.is_empty() {
             return;
         }
         let _ = self.wake.wait_timeout(g, timeout);
@@ -286,10 +290,10 @@ fn dispatch(
             Ok(()) => json_ok(serde_json::json!({"ok": true})),
             Err(err) => json_err(400, &err.to_string()),
         },
-        ("POST", "/v1/sync") => {
-            state.request_sync();
-            json_status(202, serde_json::json!({"ok": true}))
-        }
+        ("POST", "/v1/sync") => match post_sync(state, body) {
+            Ok(()) => json_status(202, serde_json::json!({"ok": true})),
+            Err(err) => json_err(400, &err.to_string()),
+        },
         ("POST", "/v1/cursor/accounts") => match post_account(state, body) {
             Ok(v) => json_ok(v),
             Err(err) => json_err(400, &err.to_string()),
@@ -338,24 +342,108 @@ fn json_err(status: u16, msg: &str) -> (u16, &'static str, Vec<u8>) {
 }
 
 #[derive(Deserialize)]
-struct ConfigPatch {
+struct DestPatch {
     url: String,
+    #[serde(default)]
+    token: String,
+}
+
+#[derive(Deserialize)]
+struct ConfigPatch {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    destinations: Option<Vec<DestPatch>>,
     hostname: String,
     upload_project: bool,
     interval_local: String,
     interval_cursor: String,
 }
 
+#[derive(Deserialize)]
+struct SyncPatch {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    full: bool,
+}
+
+fn merge_destinations(old: &[Destination], incoming: &[DestPatch]) -> Result<Vec<Destination>> {
+    if incoming.is_empty() {
+        anyhow::bail!("至少需要一个看板地址");
+    }
+    let mut out = Vec::new();
+    for patch in incoming {
+        let url = config::normalize_url(&patch.url);
+        if url.is_empty() {
+            anyhow::bail!("看板地址不能为空");
+        }
+        let token = if patch.token.trim().is_empty() {
+            old.iter()
+                .find(|d| d.url == url)
+                .map(|d| d.token.clone())
+                .ok_or_else(|| anyhow::anyhow!("新看板地址需要 ingest token"))?
+        } else {
+            patch.token.trim().to_string()
+        };
+        out.push(Destination::new(url, token));
+    }
+    Ok(out)
+}
+
 fn put_config(state: &PanelState, body: &[u8]) -> Result<()> {
     let patch: ConfigPatch = serde_json::from_slice(body).context("JSON")?;
     let mut cfg = state.config();
-    cfg.url = patch.url.trim_end_matches('/').to_string();
+    let old_dests = cfg.destinations();
+    let new_dests = if let Some(dests) = patch.destinations {
+        merge_destinations(&old_dests, &dests)?
+    } else if let Some(url) = patch.url {
+        let mut dests = old_dests.clone();
+        if dests.is_empty() {
+            anyhow::bail!("配置不完整");
+        }
+        dests[0].url = config::normalize_url(&url);
+        dests
+    } else {
+        old_dests.clone()
+    };
+    let added: Vec<String> = new_dests
+        .iter()
+        .filter(|d| !old_dests.iter().any(|o| o.url == d.url))
+        .map(|d| d.url.clone())
+        .collect();
+    cfg.set_destinations(new_dests);
     cfg.hostname = patch.hostname;
     cfg.upload_project = patch.upload_project;
     cfg.interval_local = patch.interval_local;
     cfg.interval_cursor = patch.interval_cursor;
     cfg.save(&state.config_path)?;
     state.inner.lock().expect("panel state").cfg = cfg;
+    for url in added {
+        state.enqueue_sync(SyncJob {
+            url: Some(url),
+            full: true,
+        });
+    }
+    Ok(())
+}
+
+fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
+    let patch: SyncPatch = if body.is_empty() {
+        SyncPatch {
+            url: None,
+            full: false,
+        }
+    } else {
+        serde_json::from_slice(body).context("JSON")?
+    };
+    let url = patch.url.as_deref().map(config::normalize_url).filter(|u| !u.is_empty());
+    if let Some(ref u) = url {
+        if state.config().find_dest(u).is_none() {
+            anyhow::bail!("未配置看板地址 {u}");
+        }
+    }
+    state.enqueue_sync(SyncJob { url, full: patch.full });
     Ok(())
 }
 
@@ -405,8 +493,15 @@ fn parse_ctx(data_dir: &std::path::Path) -> ParseCtx {
 }
 
 #[derive(Serialize)]
+struct DestView {
+    url: String,
+    token_prefix: String,
+}
+
+#[derive(Serialize)]
 struct StatusPayload {
     url: String,
+    destinations: Vec<DestView>,
     hostname: String,
     upload_project: bool,
     interval_local: String,
@@ -442,15 +537,27 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         let g = state.inner.lock().expect("panel state");
         (g.last_sync_agent.clone(), g.last_sync_cursor.clone())
     };
+    let dests = cfg.destinations();
+    let dest_views: Vec<DestView> = dests
+        .iter()
+        .map(|d| DestView {
+            url: d.url.clone(),
+            token_prefix: format!("{}…", d.token.chars().take(12).collect::<String>()),
+        })
+        .collect();
+    let first = dests.first();
     let payload = StatusPayload {
-        url: cfg.url.clone(),
+        url: first.map(|d| d.url.clone()).unwrap_or_default(),
+        destinations: dest_views,
         hostname: cfg.hostname.clone(),
         upload_project: cfg.upload_project,
         interval_local: cfg.interval_local.clone(),
         interval_cursor: cfg.interval_cursor.clone(),
         bind: cfg.bind.clone(),
         panel: format!("http://{}", cfg.bind),
-        token_prefix: format!("{}…", cfg.token.chars().take(12).collect::<String>()),
+        token_prefix: first
+            .map(|d| format!("{}…", d.token.chars().take(12).collect::<String>()))
+            .unwrap_or_default(),
         tools,
         cursor_accounts: {
             let mut views = merge_account_views(&extras, ide.as_ref());
@@ -633,6 +740,59 @@ mod tests {
         assert_eq!(cfg.hostname, "renamed");
         assert_eq!(cfg.interval_local, "1m");
         assert!(!cfg.upload_project);
+        assert!(state.take_sync_jobs().is_empty());
+    }
+
+    #[test]
+    fn put_config_adds_dest_and_queues_full_sync() {
+        let (_dir, state) = setup();
+        let body = serde_json::json!({
+            "destinations": [
+                { "url": "http://127.0.0.1:3847" },
+                { "url": "http://10.0.0.2:3847", "token": "aiu_second" }
+            ],
+            "hostname": "testhost",
+            "upload_project": true,
+            "interval_local": "5m",
+            "interval_cursor": "30m"
+        });
+        let (st, _, out) = dispatch(
+            &state,
+            "PUT",
+            "/v1/config",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let dests = state.config().destinations();
+        assert_eq!(dests.len(), 2);
+        assert_eq!(dests[0].token, "aiu_paneltest");
+        assert_eq!(dests[1].url, "http://10.0.0.2:3847");
+        let jobs = state.take_sync_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].url.as_deref(), Some("http://10.0.0.2:3847"));
+        assert!(jobs[0].full);
+    }
+
+    #[test]
+    fn put_config_new_dest_requires_token() {
+        let (_dir, state) = setup();
+        let body = serde_json::json!({
+            "destinations": [
+                { "url": "http://127.0.0.1:3847" },
+                { "url": "http://10.0.0.2:3847" }
+            ],
+            "hostname": "testhost",
+            "upload_project": true,
+            "interval_local": "5m",
+            "interval_cursor": "30m"
+        });
+        let (st, _, _) = dispatch(
+            &state,
+            "PUT",
+            "/v1/config",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 400);
     }
 
     #[test]
@@ -688,7 +848,39 @@ mod tests {
         let (_dir, state) = setup();
         let (st, _, _) = dispatch(&state, "POST", "/v1/sync", b"{}");
         assert_eq!(st, 202);
-        assert!(state.take_sync_request());
+        let jobs = state.take_sync_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].url.is_none());
+        assert!(!jobs[0].full);
+    }
+
+    #[test]
+    fn sync_one_url_incremental() {
+        let (_dir, state) = setup();
+        let body = serde_json::json!({ "url": "http://127.0.0.1:3847/" });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/sync",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 202);
+        let jobs = state.take_sync_jobs();
+        assert_eq!(jobs[0].url.as_deref(), Some("http://127.0.0.1:3847"));
+        assert!(!jobs[0].full);
+    }
+
+    #[test]
+    fn sync_unknown_url_is_400() {
+        let (_dir, state) = setup();
+        let body = serde_json::json!({ "url": "http://nope:1" });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/sync",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 400);
     }
 
     #[test]

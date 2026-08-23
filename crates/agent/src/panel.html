@@ -364,8 +364,21 @@
       gap: 8px 12px;
     }
     .fields.even { grid-template-columns: 1fr 1fr; }
+    .fields.triple {
+      grid-template-columns: minmax(140px, 1.2fr) minmax(100px, 0.7fr) minmax(100px, 0.7fr);
+    }
     .fields + .fields { margin-top: 8px; }
     .fields label.field { margin: 0; }
+    .dest-label { margin: 10px 0 6px; font-size: 12px; color: var(--muted); }
+    .dest-list { display: flex; flex-direction: column; gap: 8px; }
+    .dest-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .dest-row .dest-url { flex: 1.4 1 160px; min-width: 0; }
+    .dest-row .dest-token { flex: 1 1 120px; min-width: 0; }
+    .dest-row .icon-btn { flex-shrink: 0; }
     .card-cfg { padding: 12px 14px; }
     .card-cfg .card-head { margin-bottom: 8px; }
     .card-cfg label.field input {
@@ -469,7 +482,9 @@
     @media (max-width: 640px) {
       .top { flex-direction: column; align-items: flex-start; }
       .kpi-sync { flex: 1 1 100%; }
-      .fields, .fields.even { grid-template-columns: 1fr; }
+      .fields, .fields.even, .fields.triple { grid-template-columns: 1fr; }
+      .dest-row { flex-wrap: wrap; }
+      .dest-row .dest-url, .dest-row .dest-token { flex: 1 1 100%; }
     }
   </style>
 </head>
@@ -514,16 +529,18 @@
     </section>
 
     <section class="card card-cfg">
-      <div class="card-head"><h2>上报</h2></div>
-      <div class="fields">
+      <div class="card-head">
+        <h2>上报</h2>
+        <button type="button" class="plus" id="add-dest" title="添加看板地址" aria-label="添加看板地址">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5v14"/><path d="M5 12h14"/>
+          </svg>
+        </button>
+      </div>
+      <div class="fields triple">
         <label class="field" for="hostname">主机显示名
           <input id="hostname" type="text" autocomplete="off" />
         </label>
-        <label class="field" for="url">看板地址
-          <input id="url" type="text" autocomplete="off" />
-        </label>
-      </div>
-      <div class="fields even">
         <label class="field" for="interval_local">本地工具间隔
           <input id="interval_local" type="text" placeholder="5m" title="按钟面对齐，5m 在 :00/:05/:10 上报" />
         </label>
@@ -531,6 +548,8 @@
           <input id="interval_cursor" type="text" placeholder="30m" title="按钟面对齐，30m 在 :00/:30 上报" />
         </label>
       </div>
+      <div class="dest-label">看板地址</div>
+      <div class="dest-list" id="dests"></div>
       <div class="cfg-foot">
         <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
         <div class="actions">
@@ -580,6 +599,8 @@
     let fileName = "";
     let lastStatus = null;
     let jsonHash = null;
+    let cfgDirty = false;
+    let destsDirty = false;
     const usageFp = new Map();
     const usagePulseUntil = new Map();
     const usageForcePulse = new Set();
@@ -803,12 +824,93 @@
       card.appendChild(foot);
       return card;
     }
+    function normUrl(u) {
+      return String(u || "").trim().replace(/\/+$/, "");
+    }
+    function destRow(d) {
+      const row = el("div", "dest-row");
+      const urlIn = document.createElement("input");
+      urlIn.type = "text";
+      urlIn.className = "dest-url";
+      urlIn.value = d.url || "";
+      urlIn.placeholder = "http://127.0.0.1:3847";
+      urlIn.autocomplete = "off";
+      urlIn.oninput = () => { destsDirty = true; };
+      const tokIn = document.createElement("input");
+      tokIn.type = "password";
+      tokIn.className = "dest-token";
+      tokIn.placeholder = d.token_prefix ? (d.token_prefix + " 留空则保持") : "ingest token";
+      tokIn.autocomplete = "off";
+      tokIn.oninput = () => { destsDirty = true; };
+      const sync = iconBtn("refresh", "增量同步到此地址");
+      sync.onclick = () => syncOne(urlIn.value.trim(), sync);
+      const del = iconBtn("x", "删除此地址");
+      del.onclick = () => {
+        destsDirty = true;
+        row.remove();
+        refreshDestRemoveButtons();
+      };
+      row.appendChild(urlIn);
+      row.appendChild(tokIn);
+      row.appendChild(sync);
+      row.appendChild(del);
+      return row;
+    }
+    function refreshDestRemoveButtons() {
+      const rows = $("dests").querySelectorAll(".dest-row");
+      rows.forEach((row) => {
+        const btns = row.querySelectorAll(".icon-btn");
+        if (btns[1]) btns[1].disabled = rows.length <= 1;
+      });
+    }
+    function paintDests(s) {
+      if (destsDirty) return;
+      const box = $("dests");
+      box.innerHTML = "";
+      const list = s.destinations && s.destinations.length
+        ? s.destinations
+        : [{ url: s.url || "", token_prefix: s.token_prefix || "" }];
+      list.forEach((d) => box.appendChild(destRow(d)));
+      refreshDestRemoveButtons();
+    }
+    function collectDests() {
+      return [...$("dests").querySelectorAll(".dest-row")].map((row) => ({
+        url: row.querySelector(".dest-url").value.trim(),
+        token: row.querySelector(".dest-token").value.trim(),
+      })).filter((d) => d.url);
+    }
+    async function syncOne(url, btn) {
+      url = normUrl(url);
+      if (!url) {
+        setMsg("cfg-msg", "请先填写看板地址", "err");
+        return;
+      }
+      const saved = ((lastStatus && lastStatus.destinations) || []).some((d) => normUrl(d.url) === url);
+      if (!saved) {
+        setMsg("cfg-msg", "请先保存该地址", "err");
+        return;
+      }
+      btn.disabled = true;
+      btn.classList.add("spin");
+      try {
+        await api("/v1/sync", { method: "POST", body: JSON.stringify({ url }) });
+        setMsg("cfg-msg", "已请求增量同步", "ok");
+        setTimeout(refresh, 800);
+      } catch (e) {
+        setMsg("cfg-msg", e.message, "err");
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove("spin");
+      }
+    }
     function render(s) {
-      $("url").value = s.url || "";
-      $("hostname").value = s.hostname || "";
-      $("interval_local").value = s.interval_local || "";
-      $("interval_cursor").value = s.interval_cursor || "";
-      $("upload_project").checked = !!s.upload_project;
+      if (!cfgDirty) {
+        $("hostname").value = s.hostname || "";
+        $("interval_local").value = s.interval_local || "";
+        $("interval_cursor").value = s.interval_cursor || "";
+        $("upload_project").checked = !!s.upload_project;
+      }
+      paintDests(s);
       $("kpi-panel").textContent = s.panel || s.bind || "—";
       const tools = $("tools");
       tools.innerHTML = "";
@@ -966,19 +1068,38 @@
       const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       takeFile(f);
     });
+    ["hostname", "interval_local", "interval_cursor"].forEach((id) => {
+      $(id).addEventListener("input", () => { cfgDirty = true; });
+    });
+    $("upload_project").addEventListener("change", () => { cfgDirty = true; });
+    $("add-dest").onclick = () => {
+      destsDirty = true;
+      $("dests").appendChild(destRow({ url: "", token_prefix: "" }));
+      refreshDestRemoveButtons();
+      const rows = $("dests").querySelectorAll(".dest-url");
+      const last = rows[rows.length - 1];
+      if (last) last.focus();
+    };
     $("save-cfg").onclick = async () => {
       try {
+        const destinations = collectDests();
+        if (!destinations.length) {
+          setMsg("cfg-msg", "至少需要一个看板地址", "err");
+          return;
+        }
         await api("/v1/config", {
           method: "PUT",
           body: JSON.stringify({
-            url: $("url").value.trim(),
+            destinations,
             hostname: $("hostname").value.trim(),
             upload_project: $("upload_project").checked,
             interval_local: $("interval_local").value.trim(),
             interval_cursor: $("interval_cursor").value.trim(),
           }),
         });
-        setMsg("cfg-msg", "已保存，间隔立即生效", "ok");
+        cfgDirty = false;
+        destsDirty = false;
+        setMsg("cfg-msg", "已保存，新地址将全量同步", "ok");
         refresh();
       } catch (e) { setMsg("cfg-msg", e.message, "err"); }
     };

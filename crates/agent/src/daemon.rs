@@ -51,7 +51,8 @@ pub fn run_loop(
         } else {
             (cfg.local_interval()?, cfg.cursor_interval()?)
         };
-        let force = state.take_sync_request();
+        let jobs = state.take_sync_jobs();
+        let force = !jobs.is_empty();
         let now = SystemTime::now();
         let run_local = force || due_aligned(last_local, local_d, now);
         let run_cursor = force || due_aligned(last_cursor, cursor_d, now);
@@ -67,30 +68,60 @@ pub fn run_loop(
         }
 
         if !want.is_empty() {
-            match sync::run_sync_filtered(&cfg, data_dir, false, Some(&want)) {
-                Ok(report) => {
-                    for line in &report.parser_lines {
-                        eprintln!("  {line}");
+            let results = if jobs.is_empty() {
+                vec![sync::run_sync_filtered(
+                    &cfg,
+                    data_dir,
+                    false,
+                    sync::SyncOpts::sources(&want),
+                )]
+            } else {
+                jobs.into_iter()
+                    .map(|job| {
+                        sync::run_sync_filtered(
+                            &cfg,
+                            data_dir,
+                            false,
+                            sync::SyncOpts {
+                                only_sources: Some(&want),
+                                only_url: job.url.as_deref(),
+                                full: job.full,
+                            },
+                        )
+                    })
+                    .collect()
+            };
+            let mut last_err = None;
+            for result in results {
+                match result {
+                    Ok(report) => {
+                        for line in &report.parser_lines {
+                            eprintln!("  {line}");
+                        }
+                        for w in &report.warnings {
+                            eprintln!("  {w}");
+                        }
+                        if report.changed_buckets + report.changed_sessions > 0 {
+                            eprintln!(
+                                "已同步 {} buckets · {} sessions",
+                                report.ingested, report.sessions
+                            );
+                        }
                     }
-                    for w in &report.warnings {
-                        eprintln!("  {w}");
+                    Err(err) => {
+                        eprintln!("同步失败: {err:#}");
+                        last_err = Some(err);
                     }
-                    if report.changed_buckets + report.changed_sessions > 0 {
-                        eprintln!(
-                            "已同步 {} buckets · {} sessions",
-                            report.ingested, report.sessions
-                        );
-                    }
-                    state.record_sync(run_local, run_cursor, LastSyncView::now_ok());
                 }
-                Err(err) => {
-                    eprintln!("同步失败: {err:#}");
-                    state.record_sync(
-                        run_local,
-                        run_cursor,
-                        LastSyncView::from_error(&err.to_string()),
-                    );
-                }
+            }
+            if let Some(err) = last_err {
+                state.record_sync(
+                    run_local,
+                    run_cursor,
+                    LastSyncView::from_error(&err.to_string()),
+                );
+            } else {
+                state.record_sync(run_local, run_cursor, LastSyncView::now_ok());
             }
             let now = SystemTime::now();
             if run_local {
