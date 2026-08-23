@@ -59,7 +59,13 @@ export type Distributions = {
 export type ActivityCell = { dow: number; hour: number; tokens: number; cost_usd: number }
 export type Activity = { cells: ActivityCell[] }
 
-export type HostRow = { host_id: string; hostname: string; last_seen: string; agent_version?: string | null }
+export type HostRow = {
+  host_id: string
+  hostname: string
+  last_seen: string
+  agent_version?: string | null
+  timezone?: string | null
+}
 export type SessionRow = {
   host_id: string
   source: string

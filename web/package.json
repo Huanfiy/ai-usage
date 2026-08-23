@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test src/timeRange.test.ts"
+    "test": "node --experimental-strip-types --test src/timeRange.test.ts src/format.test.ts"
   },
   "dependencies": {
     "vue": "^3.5.13"

@@ -45,6 +45,56 @@ export function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString()
 }
 
+/** `+08:00` / `-05:30` → minutes east of UTC. Invalid → null. */
+export function parseUtcOffsetMinutes(raw?: string | null): number | null {
+  if (!raw) return null
+  const m = /^([+-])(\d{2}):(\d{2})$/.exec(raw.trim())
+  if (!m) return null
+  const h = Number(m[2])
+  const min = Number(m[3])
+  if (h > 14 || min > 59) return null
+  const sign = m[1] === '-' ? -1 : 1
+  return sign * (h * 60 + min)
+}
+
+type Wall = { y: number; m: number; d: number; h: number; min: number; s: number }
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function wallTime(iso: string, offsetMin: number): Wall | null {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return null
+  const x = new Date(t + offsetMin * 60_000)
+  return {
+    y: x.getUTCFullYear(),
+    m: x.getUTCMonth() + 1,
+    d: x.getUTCDate(),
+    h: x.getUTCHours(),
+    min: x.getUTCMinutes(),
+    s: x.getUTCSeconds(),
+  }
+}
+
+function md(p: Wall): string {
+  return `${p.m}/${p.d}`
+}
+
+function hms(p: Wall): string {
+  return `${pad2(p.h)}:${pad2(p.min)}:${pad2(p.s)}`
+}
+
+/** Same calendar day: `8/24 01:20:33-01:20:58`. Cross-day: `8/24 01:20:33 ~ 8/25 01:20:58`. */
+export function fmtSessionSpan(fromIso: string, toIso: string, tz?: string | null): string {
+  const offset = parseUtcOffsetMinutes(tz) ?? -new Date().getTimezoneOffset()
+  const a = wallTime(fromIso, offset)
+  const b = wallTime(toIso, offset)
+  if (!a || !b) return ''
+  if (a.y === b.y && a.m === b.m && a.d === b.d) return `${md(a)} ${hms(a)}-${hms(b)}`
+  return `${md(a)} ${hms(a)} ~ ${md(b)} ${hms(b)}`
+}
+
 export function fmtMetric(metric: Metric, n: number): string {
   return metric === 'cost' ? fmtUsd(n) : fmtTokens(n)
 }

@@ -259,7 +259,7 @@ function hostLabel(hostId: string, hostname: string): string {
         <DonutCard title="模型分布" :items="distributions.model" show-pricing />
         <DonutCard title="项目分布" :items="distributions.project" />
       </section>
-      <SessionList :sessions="sessions" />
+      <SessionList :sessions="sessions" :hosts="hosts" />
     </template>
 
     <SettingsPage
