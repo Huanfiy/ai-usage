@@ -1,6 +1,6 @@
 use ai_usage_protocol::{
-    account_host_id, is_account_scoped, is_known_source, is_valid_account_hash, utc_day,
-    IngestRequest, IngestResponse, UsageBucket, UsageSession,
+    account_host_id, is_account_scoped, is_known_source, is_valid_account_hash, normalize_timezone,
+    utc_day, IngestRequest, IngestResponse, UsageBucket, UsageSession,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -31,16 +31,20 @@ pub fn ingest(
     host_id: &str,
     hostname: &str,
     agent_version: Option<&str>,
+    timezone: Option<&str>,
     req: IngestRequest,
 ) -> Result<IngestResponse> {
     let now = Utc::now().to_rfc3339();
+    let timezone = timezone.and_then(normalize_timezone);
     conn.execute(
-        "INSERT INTO hosts(host_id, hostname, last_seen, agent_version) VALUES(?1,?2,?3,?4)
+        "INSERT INTO hosts(host_id, hostname, last_seen, agent_version, timezone)
+         VALUES(?1,?2,?3,?4,?5)
          ON CONFLICT(host_id) DO UPDATE SET
            hostname=excluded.hostname,
            last_seen=excluded.last_seen,
-           agent_version=COALESCE(excluded.agent_version, hosts.agent_version)",
-        params![host_id, hostname, now, agent_version],
+           agent_version=COALESCE(excluded.agent_version, hosts.agent_version),
+           timezone=COALESCE(excluded.timezone, hosts.timezone)",
+        params![host_id, hostname, now, agent_version, timezone],
     )?;
 
     let mut resp = IngestResponse::default();
@@ -305,19 +309,21 @@ mod tests {
                 schema_version: 1,
                 hostname: Some("a".into()),
                 agent_version: Some("0.1.0".into()),
+                timezone: None,
                 buckets: vec![sample_bucket(100)],
                 sessions: vec![],
             };
-            let r1 = ingest(c, "host1", "a", Some("0.1.0"), req)?;
+            let r1 = ingest(c, "host1", "a", Some("0.1.0"), None, req)?;
             assert_eq!(r1.ingested, 1);
             let req = IngestRequest {
                 schema_version: 1,
                 hostname: Some("a".into()),
                 agent_version: Some("0.1.0".into()),
+                timezone: None,
                 buckets: vec![sample_bucket(40)],
                 sessions: vec![],
             };
-            let r2 = ingest(c, "host1", "a", Some("0.1.0"), req)?;
+            let r2 = ingest(c, "host1", "a", Some("0.1.0"), None, req)?;
             assert_eq!(r2.protected.buckets, 1);
             let n: i64 = c.query_row("SELECT input_tokens FROM usage_buckets", [], |r| r.get(0))?;
             assert_eq!(n, 100);
@@ -337,10 +343,11 @@ mod tests {
                 schema_version: 1,
                 hostname: Some("a".into()),
                 agent_version: None,
+                timezone: None,
                 buckets: vec![b],
                 sessions: vec![],
             };
-            let r = ingest(c, "host1", "a", None, req)?;
+            let r = ingest(c, "host1", "a", None, None, req)?;
             assert_eq!(r.dropped.buckets, 1);
             assert_eq!(r.dropped.unknown_sources, vec!["not-a-source".to_string()]);
             Ok(())
@@ -385,10 +392,12 @@ mod tests {
             host,
             hostname,
             Some("0.1.0"),
+            None,
             IngestRequest {
                 schema_version: 1,
                 hostname: Some(hostname.into()),
                 agent_version: Some("0.1.0".into()),
+                timezone: None,
                 buckets,
                 sessions: vec![],
             },

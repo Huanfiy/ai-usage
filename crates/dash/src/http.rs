@@ -85,9 +85,19 @@ async fn ingest(
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "unknown".into());
     let agent_version = req.agent_version.clone();
+    let timezone = req.timezone.clone();
     let resp = st
         .db
-        .with(|c| crate::ingest::ingest(c, &host_id, &hostname, agent_version.as_deref(), req))
+        .with(|c| {
+            crate::ingest::ingest(
+                c,
+                &host_id,
+                &hostname,
+                agent_version.as_deref(),
+                timezone.as_deref(),
+                req,
+            )
+        })
         .map_err(ApiError::internal)?;
     Ok(Json(serde_json::to_value(resp).unwrap()))
 }

@@ -19,6 +19,7 @@ impl Db {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         migrate_session_tokens(&conn)?;
+        migrate_host_timezone(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -35,7 +36,8 @@ CREATE TABLE IF NOT EXISTS hosts (
   host_id TEXT PRIMARY KEY,
   hostname TEXT NOT NULL,
   last_seen TEXT NOT NULL,
-  agent_version TEXT
+  agent_version TEXT,
+  timezone TEXT
 );
 CREATE TABLE IF NOT EXISTS ingest_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -138,6 +140,20 @@ fn migrate_session_tokens(conn: &Connection) -> Result<()> {
         if !existing.contains(name) {
             conn.execute(sql, [])?;
         }
+    }
+    Ok(())
+}
+
+fn migrate_host_timezone(conn: &Connection) -> Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(hosts)")?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        names
+    };
+    if !existing.contains("timezone") {
+        conn.execute("ALTER TABLE hosts ADD COLUMN timezone TEXT", [])?;
     }
     Ok(())
 }
@@ -362,10 +378,12 @@ mod tests {
             host,
             hostname,
             Some("0.1.0"),
+            None,
             IngestRequest {
                 schema_version: 1,
                 hostname: Some(hostname.into()),
                 agent_version: Some("0.1.0".into()),
+                timezone: None,
                 buckets,
                 sessions: vec![session()],
             },

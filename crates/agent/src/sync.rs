@@ -187,6 +187,7 @@ pub fn run_sync_filtered(
             schema_version: SCHEMA_VERSION,
             hostname: Some(cfg.hostname.clone()),
             agent_version: Some(env!("CARGO_PKG_VERSION").into()),
+            timezone: Some(chrono::Local::now().format("%:z").to_string()),
             buckets: batch.clone(),
             sessions: sess.clone(),
         };

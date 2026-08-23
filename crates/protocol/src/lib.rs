@@ -36,6 +36,9 @@ pub struct IngestRequest {
     pub hostname: Option<String>,
     #[serde(default)]
     pub agent_version: Option<String>,
+    /// Agent local UTC offset at ingest time, e.g. `+08:00`. Display only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
     #[serde(default)]
     pub buckets: Vec<UsageBucket>,
     #[serde(default)]
@@ -298,6 +301,24 @@ fn clamp(s: &str, max: usize) -> String {
     }
 }
 
+/// Accept `+HH:MM` / `-HH:MM`. Anything else is dropped.
+pub fn normalize_timezone(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let b = t.as_bytes();
+    if t.len() != 6 || (b[0] != b'+' && b[0] != b'-') || b[3] != b':' {
+        return None;
+    }
+    if !t[1..3].bytes().all(|c| c.is_ascii_digit()) || !t[4..6].bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let h: i32 = t[1..3].parse().ok()?;
+    let m: i32 = t[4..6].parse().ok()?;
+    if h > 14 || m > 59 {
+        return None;
+    }
+    Some(t.to_string())
+}
+
 fn clamp_nonempty(s: &str, max: usize) -> String {
     let t = clamp(s, max);
     if t.is_empty() {
@@ -368,6 +389,17 @@ mod tests {
         with_tokens = with_tokens.normalize();
         assert_eq!(with_tokens.total_tokens, 10);
         assert_ne!(hashed.content_hash(), with_tokens.content_hash());
+    }
+
+    #[test]
+    fn timezone_offset_is_validated() {
+        assert_eq!(normalize_timezone("+08:00").as_deref(), Some("+08:00"));
+        assert_eq!(normalize_timezone(" -05:30 ").as_deref(), Some("-05:30"));
+        assert_eq!(normalize_timezone("UTC+8"), None);
+        assert_eq!(normalize_timezone("+25:00"), None);
+        let json = r#"{"schema_version":1}"#;
+        let req: IngestRequest = serde_json::from_str(json).unwrap();
+        assert!(req.timezone.is_none());
     }
 
     #[test]

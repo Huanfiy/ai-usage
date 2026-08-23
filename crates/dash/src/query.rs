@@ -575,11 +575,12 @@ pub struct HostRow {
     pub hostname: String,
     pub last_seen: String,
     pub agent_version: Option<String>,
+    pub timezone: Option<String>,
 }
 
 pub fn hosts(conn: &Connection) -> Result<Vec<HostRow>> {
     let mut stmt = conn.prepare(
-        "SELECT host_id, hostname, last_seen, agent_version FROM hosts ORDER BY last_seen DESC",
+        "SELECT host_id, hostname, last_seen, agent_version, timezone FROM hosts ORDER BY last_seen DESC",
     )?;
     let rows = stmt
         .query_map([], |r| {
@@ -588,6 +589,7 @@ pub fn hosts(conn: &Connection) -> Result<Vec<HostRow>> {
                 hostname: r.get(1)?,
                 last_seen: r.get(2)?,
                 agent_version: r.get(3)?,
+                timezone: r.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -716,10 +718,11 @@ mod tests {
             schema_version: 1,
             hostname: Some("a".into()),
             agent_version: Some("0.1.0".into()),
+            timezone: None,
             buckets,
             sessions,
         };
-        ingest(c, "host1", "a", Some("0.1.0"), req).unwrap();
+        ingest(c, "host1", "a", Some("0.1.0"), None, req).unwrap();
     }
 
     #[test]
