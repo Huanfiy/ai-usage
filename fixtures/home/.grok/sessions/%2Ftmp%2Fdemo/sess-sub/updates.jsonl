@@ -1,0 +1,2 @@
+{"timestamp":1768464000,"method":"session/update","params":{"sessionId":"sess-sub","update":{"sessionUpdate":"user_message_chunk"}}}
+{"timestamp":1768464060,"method":"session/update","params":{"sessionId":"sess-sub","update":{"sessionUpdate":"turn_completed","usage":{"inputTokens":9000,"outputTokens":80,"cachedReadTokens":100,"cacheCreationTokens":20,"reasoningTokens":10,"modelUsage":{"grok-4.6-build":{"inputTokens":9000,"outputTokens":80,"cachedReadTokens":100,"cacheCreationTokens":20,"reasoningTokens":10}}}}}}

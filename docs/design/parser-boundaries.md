@@ -48,7 +48,13 @@
 
 **扫描根**：`$GROK_HOME/sessions/<encoded-cwd>/<session-id>/`（缺省 `~/.grok`）。token 来自 `updates.jsonl` 的 `turn_completed.usage`；`modelUsage` 非空则按模型拆。`input` 扣除 `cache_read`，`output` 扣除 reasoning；`cacheCreationTokens` 写入 `cache_creation_input_tokens`，不折进 `input`。
 
+**计入**：普通会话（无 `session_kind` 或非 `subagent`）的 `turn_completed.usage`。父会话 `usage` 已含子用量。
+
+**不计 token、仍出 session**：`summary.json` 的 `session_kind == "subagent"`。此类目录与父会话同级；本阶段不读父目录 `subagents/` sidecar，也不按 fingerprint 从父用量里拆子增量，因此整目录不产生 Bucket。父会话文件仍按普通规则计入。看板可能看到子会话条目，其用量为 0。
+
 **不计**：encoded cwd 超长时 group 目录 sidecar `.cwd`。有 `summary.json` 的 `info.cwd` 或 `git_root_dir` 时不依赖该文件。未出现真实超长路径前不增加扫描分支。
+
+**不做**：跨文件 replay 拆分（按 fingerprint 对齐父会话、从父用量减去子增量）。与「单文件可解析」冲突。
 
 ### Cursor（`cursor`）
 
@@ -74,6 +80,7 @@
 | --- | --- |
 | Codex fork / sub-agent 整文件不计 token | 目标机器上此类文件成为用量主体，且有对账级精度需求；实现仍须保持单文件可解析，或单独论证跨文件索引的维护成本 |
 | Claude Desktop Cowork 扫描 | 存在以 Cowork 为主要日志位置的使用者，且扫描范围可限制在可枚举的 app-data 根下 |
+| Grok subagent 不计 token | 父会话 `turn_completed.usage` 不再聚合子用量，跳过子目录会漏计 |
 | Grok `.cwd` | 出现 summary 无 cwd、且 group 目录带 `.cwd` 的真实会话 |
 
 重开后删除或改写本节对应行，不另留「已过时」段落。

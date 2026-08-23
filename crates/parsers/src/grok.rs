@@ -11,6 +11,7 @@ use crate::util::{
 };
 
 const SOURCE: &str = ai_usage_protocol::SOURCE_GROK;
+const CACHE_VERSION: u32 = 1;
 
 pub struct GrokAdapter;
 
@@ -109,9 +110,19 @@ fn list_sessions(sessions_dir: &Path) -> Vec<SessionDir> {
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct FileCache {
+    #[serde(default)]
+    algorithm_version: u32,
     sig: FileSig,
     entries: Vec<UsageEntry>,
     events: Vec<TimingEvent>,
+}
+
+fn cache_current(hit: &FileCache) -> bool {
+    hit.algorithm_version == CACHE_VERSION
+}
+
+fn is_subagent(summary: &Value) -> bool {
+    summary.get("session_kind").and_then(|v| v.as_str()) == Some("subagent")
 }
 
 fn parse_session(
@@ -124,7 +135,7 @@ fn parse_session(
         .or_else(|| file_sig(&summary_path))
         .ok_or_else(|| "missing files".to_string())?;
     let cache_file = cache::cache_path(cache_dir, "grok", &session.path);
-    if let Some(hit) = cache::load::<FileCache>(&cache_file) {
+    if let Some(hit) = cache::load::<FileCache>(&cache_file).filter(cache_current) {
         if cache::sig_unchanged(&hit.sig, &sig) {
             let mut entries = hit.entries;
             attach_session_id(&mut entries, &session.id);
@@ -133,6 +144,7 @@ fn parse_session(
     }
 
     let summary = read_json_value(&summary_path).unwrap_or(Value::Null);
+    let skip_usage = is_subagent(&summary);
     let cwd = summary
         .pointer("/info/cwd")
         .or_else(|| summary.get("git_root_dir"))
@@ -160,7 +172,7 @@ fn parse_session(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let ts = obj.get("timestamp").and_then(parse_ts);
-            if kind == "turn_completed" {
+            if kind == "turn_completed" && !skip_usage {
                 if let Some(ts) = ts {
                     emit_turn_usage(
                         &mut entries,
@@ -262,6 +274,7 @@ fn parse_session(
     cache::save(
         &cache_file,
         &FileCache {
+            algorithm_version: CACHE_VERSION,
             sig,
             entries: entries.clone(),
             events: events.clone(),
@@ -324,4 +337,57 @@ fn push_usage(
         reasoning_output_tokens: reasoning,
         session_id: session_id.to_string(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn fixture_home() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/home")
+            .canonicalize()
+            .expect("fixtures")
+    }
+
+    #[test]
+    fn stale_cache_without_version_is_reparsed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = fixture_home();
+        let session_path = home.join(".grok/sessions/%2Ftmp%2Fdemo/sess-sub");
+        let cache_file = cache::cache_path(tmp.path(), "grok", &session_path);
+        let sig = file_sig(&session_path.join("updates.jsonl")).expect("sig");
+        let ts = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap();
+        cache::save(
+            &cache_file,
+            &FileCache {
+                algorithm_version: 0,
+                sig,
+                entries: vec![UsageEntry {
+                    source: SOURCE.into(),
+                    model: "grok-4.6-build".into(),
+                    project: "demo".into(),
+                    timestamp: ts,
+                    input_tokens: 9000,
+                    output_tokens: 80,
+                    cache_read_input_tokens: 100,
+                    cache_creation_input_tokens: 20,
+                    reasoning_output_tokens: 10,
+                    session_id: "sess-sub".into(),
+                }],
+                events: Vec::new(),
+            },
+        );
+        let ctx = ParseCtx::new(home, tmp.path().to_path_buf());
+        let result = GrokAdapter.parse(&ctx);
+        assert_eq!(result.buckets.len(), 1);
+        assert_eq!(result.buckets[0].input_tokens, 600);
+        let sub = result
+            .sessions
+            .iter()
+            .find(|s| s.session_hash == ai_usage_protocol::session_hash_from_id("sess-sub"))
+            .expect("sess-sub");
+        assert_eq!(sub.total_tokens, 0);
+    }
 }
