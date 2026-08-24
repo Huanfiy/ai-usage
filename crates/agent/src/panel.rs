@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use ai_usage_parsers::{
     fetch_plan_with_raw, read_ide_cursor_auth, AdapterEnv, CursorAccountSnapshot,
-    CursorTokenPreview, ParseCtx,
+    CursorTokenPreview, ParseCtx, PlanFetchError,
 };
 
 use crate::config::{self, AgentConfig, Destination};
@@ -25,7 +25,6 @@ const ICON_GROK: &[u8] = include_bytes!("panel-icons/grok.svg");
 const ICON_CURSOR: &[u8] = include_bytes!("panel-icons/cursor.svg");
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_HEADERS: usize = 8 * 1024;
-const PLAN_TTL: Duration = Duration::from_secs(90);
 
 pub struct PanelState {
     pub config_path: PathBuf,
@@ -33,11 +32,11 @@ pub struct PanelState {
     inner: Mutex<Inner>,
     wake: Condvar,
     usage_cache: Mutex<HashMap<String, CachedPlan>>,
+    usage_errors: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Clone)]
 struct CachedPlan {
-    at: Instant,
     snapshot: CursorAccountSnapshot,
     raw: serde_json::Value,
 }
@@ -91,6 +90,7 @@ impl PanelState {
             }),
             wake: Condvar::new(),
             usage_cache: Mutex::new(HashMap::new()),
+            usage_errors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -103,41 +103,57 @@ impl PanelState {
         g.sync_jobs.push(job);
         self.wake.notify_all();
         drop(g);
-        self.usage_cache.lock().expect("usage cache").clear();
     }
 
-    fn plan_entry(&self, hash: &str, token: &str, force: bool) -> Option<CachedPlan> {
-        if cfg!(test) {
-            return None;
-        }
-        if !force {
-            let cache = self.usage_cache.lock().expect("usage cache");
-            if let Some(cached) = cache.get(hash) {
-                if cached.at.elapsed() < PLAN_TTL {
-                    return Some(cached.clone());
-                }
-            }
-        }
+    fn cached_plan(&self, hash: &str) -> Option<CachedPlan> {
+        self.usage_cache
+            .lock()
+            .expect("usage cache")
+            .get(hash)
+            .cloned()
+    }
+
+    fn plan_error(&self, hash: &str) -> Option<String> {
+        self.usage_errors
+            .lock()
+            .expect("usage errors")
+            .get(hash)
+            .cloned()
+    }
+
+    fn drop_plan(&self, hash: &str) {
+        self.usage_cache.lock().expect("usage cache").remove(hash);
+        self.usage_errors.lock().expect("usage errors").remove(hash);
+    }
+
+    fn fetch_plan(&self, hash: &str, token: &str) -> Result<CachedPlan> {
         match fetch_plan_with_raw(token) {
-            Some((snapshot, raw)) => {
-                let entry = CachedPlan {
-                    at: Instant::now(),
-                    snapshot,
-                    raw,
-                };
+            Ok((snapshot, raw)) => {
+                let entry = CachedPlan { snapshot, raw };
                 self.usage_cache
                     .lock()
                     .expect("usage cache")
                     .insert(hash.to_string(), entry.clone());
-                Some(entry)
+                self.usage_errors.lock().expect("usage errors").remove(hash);
+                Ok(entry)
             }
-            None => self
-                .usage_cache
-                .lock()
-                .expect("usage cache")
-                .get(hash)
-                .cloned(),
+            Err(err) => {
+                let msg = plan_err_msg(err).to_string();
+                self.usage_errors
+                    .lock()
+                    .expect("usage errors")
+                    .insert(hash.to_string(), msg.clone());
+                Err(anyhow::anyhow!("{msg}"))
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn put_plan_error(&self, hash: &str, msg: &str) {
+        self.usage_errors
+            .lock()
+            .expect("usage errors")
+            .insert(hash.to_string(), msg.to_string());
     }
 
     pub fn take_sync_jobs(&self) -> Vec<SyncJob> {
@@ -304,7 +320,14 @@ fn dispatch(
             let hash = refresh_account_hash(p).expect("matched");
             match refresh_account_plan(state, &hash) {
                 Ok(()) => json_ok(serde_json::json!({"ok": true})),
-                Err(err) => json_err(404, &err.to_string()),
+                Err(err) => {
+                    let msg = err.to_string();
+                    if msg == "账号不存在" {
+                        json_err(404, &msg)
+                    } else {
+                        json_err(502, &msg)
+                    }
+                }
             }
         }
         (m, p) if m == "DELETE" && p.starts_with("/v1/cursor/accounts/") => {
@@ -312,7 +335,7 @@ fn dispatch(
             let hash = percent_decode(hash);
             match cursor_accounts::remove(&state.data_dir, &hash) {
                 Ok(true) => {
-                    state.usage_cache.lock().expect("usage cache").remove(&hash);
+                    state.drop_plan(&hash);
                     json_ok(serde_json::json!({"ok": true}))
                 }
                 Ok(false) => json_err(404, "账号不存在"),
@@ -563,7 +586,7 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         tools,
         cursor_accounts: {
             let mut views = merge_account_views(&extras, ide.as_ref());
-            apply_live_plan(state, &mut views, &extras, ide.as_ref());
+            apply_cached_plan(state, &mut views);
             views
         },
         last_sync_agent,
@@ -607,9 +630,10 @@ fn refresh_account_plan(state: &PanelState, hash: &str) -> Result<()> {
     let ide = read_ide_cursor_auth(&parse_ctx(&state.data_dir));
     let token =
         account_token(&extras, ide.as_ref(), hash).ok_or_else(|| anyhow::anyhow!("账号不存在"))?;
-    state.usage_cache.lock().expect("usage cache").remove(hash);
-    let _ = state.plan_entry(hash, &token, true);
-    Ok(())
+    if cfg!(test) {
+        return Ok(());
+    }
+    state.fetch_plan(hash, &token).map(|_| ())
 }
 
 fn account_token(
@@ -629,43 +653,22 @@ fn account_token(
         .map(|a| a.access_token.clone())
 }
 
-fn apply_live_plan(
-    state: &PanelState,
-    views: &mut [AccountView],
-    extras: &CursorAccountsFile,
-    ide: Option<&CursorTokenPreview>,
-) {
-    if cfg!(test) || views.is_empty() {
-        return;
-    }
-    let mut tokens: Vec<(String, String)> = Vec::new();
-    if let Some(ide) = ide {
-        tokens.push((ide.account_hash.clone(), ide.access_token.clone()));
-    }
-    for a in &extras.accounts {
-        if !tokens.iter().any(|(h, _)| h == &a.account_hash) {
-            tokens.push((a.account_hash.clone(), a.access_token.clone()));
+fn apply_cached_plan(state: &PanelState, views: &mut [AccountView]) {
+    for view in views {
+        if let Some(entry) = state.cached_plan(&view.account_hash) {
+            view.snapshot = entry.snapshot;
+            view.usage_raw = Some(entry.raw);
         }
+        view.usage_error = state.plan_error(&view.account_hash);
     }
-    let snaps: Vec<(String, Option<CachedPlan>)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = tokens
-            .iter()
-            .map(|(hash, token)| {
-                scope.spawn(|| (hash.clone(), state.plan_entry(hash, token, false)))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("plan fetch"))
-            .collect()
-    });
-    for (hash, entry) in snaps {
-        if let Some(view) = views.iter_mut().find(|a| a.account_hash == hash) {
-            if let Some(entry) = entry {
-                view.snapshot = entry.snapshot;
-                view.usage_raw = Some(entry.raw);
-            }
-        }
+}
+
+fn plan_err_msg(err: PlanFetchError) -> &'static str {
+    match err {
+        PlanFetchError::Token | PlanFetchError::Auth => "会话失效，请重新导入",
+        PlanFetchError::Network => "拉取超时或网络失败",
+        PlanFetchError::Status => "Cursor 接口返回异常",
+        PlanFetchError::Parse => "无法解析套餐数据",
     }
 }
 
@@ -960,5 +963,33 @@ mod tests {
         let path = format!("/v1/cursor/accounts/{hash}/refresh");
         let (st, _, out) = dispatch(&state, "POST", &path, b"");
         assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn status_shows_plan_error_without_fetching() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let hash = status["cursor_accounts"][0]["account_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(status["cursor_accounts"][0].get("usage_error").is_none());
+        state.put_plan_error(&hash, "会话失效，请重新导入");
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        assert_eq!(
+            status["cursor_accounts"][0]["usage_error"],
+            "会话失效，请重新导入"
+        );
     }
 }

@@ -234,6 +234,16 @@
       gap: 10px;
       min-height: 176px;
     }
+    .acct.fault { border-color: #5a3030; }
+    .acct-err {
+      color: var(--rose);
+      font-size: 12px;
+      line-height: 1.45;
+      background: rgba(224, 122, 122, 0.08);
+      border: 1px solid #5a3030;
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
     .acct-top { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
     .acct-head {
       display: flex;
@@ -273,6 +283,10 @@
       background: #161c24;
     }
     .icon-btn svg { width: 15px; height: 15px; display: block; }
+    .icon-btn.spin {
+      color: var(--mint);
+      border-color: var(--mint);
+    }
     .icon-btn.spin svg { animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .icon-btn.pulse {
@@ -605,6 +619,14 @@
     const usageFp = new Map();
     const usagePulseUntil = new Map();
     const usageForcePulse = new Set();
+    const planPaused = new Set();
+    const planSpinning = new Set();
+    const planInflight = new Map();
+    const PLAN_MS = 60000;
+    const STATUS_MS = 8000;
+    let statusTimer = null;
+    let planTimer = null;
+    let planBusy = false;
     const ICONS = {
       refresh: [
         "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",
@@ -748,13 +770,19 @@
       return false;
     }
     function renderAccount(a, pulseJson) {
-      const card = el("article", "acct");
+      const card = el("article", "acct" + (a.usage_error ? " fault" : ""));
+      card.dataset.hash = a.account_hash;
       const top = el("div", "acct-top");
       const head = el("div", "acct-head");
       head.appendChild(el("div", "acct-email", a.account_label || a.account_hash));
       const tools = el("div", "acct-tools");
-      const refreshBtn = iconBtn("refresh", "刷新套餐用量");
-      refreshBtn.onclick = () => refreshAccount(a.account_hash, refreshBtn);
+      const refreshBtn = iconBtn("refresh", a.usage_error ? "拉取失败，点击重试" : "刷新套餐用量");
+      refreshBtn.setAttribute("data-plan-refresh", "");
+      if (planSpinning.has(a.account_hash)) {
+        refreshBtn.classList.add("spin");
+        refreshBtn.disabled = true;
+      }
+      refreshBtn.onclick = () => refreshAccount(a.account_hash);
       const jsonBtn = iconBtn("braces", pulseJson ? "用量已更新" : "查看原始 JSON");
       if (pulseJson) {
         jsonBtn.classList.add("pulse");
@@ -779,6 +807,7 @@
       }
       if (a.from_ide) chips.appendChild(el("span", "chip warn", "本机 IDE"));
       if (a.stored) chips.appendChild(el("span", "chip", "已导入"));
+      if (a.usage_error) chips.appendChild(el("span", "chip bad", "异常"));
       top.appendChild(chips);
       card.appendChild(top);
 
@@ -794,6 +823,12 @@
         if (a.billing_cycle_end) bits.push("账期至 " + String(a.billing_cycle_end).slice(0, 10));
         if (bits.length) box.appendChild(el("div", "meta", bits.join(" · ")));
         card.appendChild(box);
+      }
+      if (a.usage_error) {
+        planPaused.add(a.account_hash);
+        const err = el("div", "acct-err", a.usage_error + " · 自动刷新已暂停，点同步重试");
+        err.setAttribute("role", "alert");
+        card.appendChild(err);
       }
 
       const foot = el("div", "acct-foot");
@@ -932,7 +967,12 @@
           usageFp.delete(hash);
           usagePulseUntil.delete(hash);
           usageForcePulse.delete(hash);
+          planPaused.delete(hash);
+          planSpinning.delete(hash);
         }
+      }
+      for (const hash of [...planPaused]) {
+        if (!live.has(hash)) planPaused.delete(hash);
       }
       if (!list.length) {
         grid.appendChild(el("div", "empty", "尚未挂 Cursor 账号。点右上角 + 粘贴凭证或上传 JSON。"));
@@ -953,17 +993,76 @@
       lastStatus = s;
       render(s);
     }
-    async function refreshAccount(hash, btn) {
-      btn.disabled = true;
-      btn.classList.add("spin");
+    function applyPlanSpin(hash) {
+      const card = document.querySelector('.acct[data-hash="' + hash + '"]');
+      if (!card) return;
+      const btn = card.querySelector("[data-plan-refresh]");
+      if (!btn) return;
+      const on = planSpinning.has(hash);
+      btn.classList.toggle("spin", on);
+      btn.disabled = on;
+    }
+    async function refreshAccount(hash, opts) {
+      opts = opts || {};
+      if (planInflight.has(hash)) {
+        await planInflight.get(hash);
+        if (!opts.deferPaint) await refresh();
+        return;
+      }
+      const run = (async () => {
+        planSpinning.add(hash);
+        applyPlanSpin(hash);
+        try {
+          await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/refresh", { method: "POST" });
+          planPaused.delete(hash);
+          usageForcePulse.add(hash);
+        } catch (e) {
+          planPaused.add(hash);
+        } finally {
+          planSpinning.delete(hash);
+          applyPlanSpin(hash);
+        }
+      })();
+      planInflight.set(hash, run);
       try {
-        await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/refresh", { method: "POST" });
-        usageForcePulse.add(hash);
+        await run;
+        if (!opts.deferPaint) await refresh();
+      } finally {
+        planInflight.delete(hash);
+      }
+    }
+    function pageVisible() {
+      return document.visibilityState === "visible";
+    }
+    function stopVisibleLoops() {
+      if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+      if (planTimer) { clearInterval(planTimer); planTimer = null; }
+    }
+    function startVisibleLoops() {
+      stopVisibleLoops();
+      if (!pageVisible()) return;
+      statusTimer = setInterval(() => refresh().catch(() => {}), STATUS_MS);
+      planTimer = setInterval(() => { void tickPlan(); }, PLAN_MS);
+    }
+    async function tickPlan() {
+      if (!pageVisible() || planBusy) return;
+      const list = (lastStatus && lastStatus.cursor_accounts) || [];
+      const targets = list.filter((a) => a.account_hash && !planPaused.has(a.account_hash) && !a.usage_error);
+      if (!targets.length) return;
+      planBusy = true;
+      try {
+        await Promise.all(targets.map((a) => refreshAccount(a.account_hash, { deferPaint: true })));
         await refresh();
-      } catch (e) {
-        setMsg("acct-msg", e.message, "err");
-        btn.disabled = false;
-        btn.classList.remove("spin");
+      } finally {
+        planBusy = false;
+      }
+    }
+    function onVisibility() {
+      if (pageVisible()) {
+        refresh().then(() => tickPlan()).catch(() => {});
+        startVisibleLoops();
+      } else {
+        stopVisibleLoops();
       }
     }
     function fillJson(a) {
@@ -1112,11 +1211,16 @@
         setTimeout(refresh, 800);
       } catch (e) { setMsg("sync-msg", e.message, "err"); }
     };
-    refresh().catch((e) => {
+    refresh().then(() => {
+      if (pageVisible()) {
+        void tickPlan();
+        startVisibleLoops();
+      }
+    }).catch((e) => {
       $("page-err").hidden = false;
       $("page-err").textContent = e.message;
     });
-    setInterval(() => refresh().catch(() => {}), 8000);
+    document.addEventListener("visibilitychange", onVisibility);
   </script>
 </body>
 </html>

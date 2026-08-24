@@ -16,7 +16,7 @@ pub use codex::CodexAdapter;
 pub use cursor::{
     extract_cursor_previews, fetch_plan_snapshot, fetch_plan_with_raw, preview_cursor_token,
     read_ide_cursor_auth, snapshot_from_usage_json, CursorAccountSnapshot, CursorAdapter,
-    CursorTokenPreview,
+    CursorTokenPreview, PlanFetchError,
 };
 pub use grok::GrokAdapter;
 

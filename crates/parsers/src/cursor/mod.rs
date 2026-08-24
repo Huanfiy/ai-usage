@@ -96,20 +96,34 @@ pub fn read_ide_cursor_auth(ctx: &ParseCtx) -> Option<CursorTokenPreview> {
     Some(preview)
 }
 
+/// Why `GET /api/usage-summary` failed. The panel maps these to copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanFetchError {
+    Token,
+    Auth,
+    Network,
+    Status,
+    Parse,
+}
+
 /// Live plan meter from `GET /api/usage-summary`. None = network/auth/parse failed.
 pub fn fetch_plan_snapshot(access_token: &str) -> Option<CursorAccountSnapshot> {
-    fetch_plan_with_raw(access_token).map(|(snap, _)| snap)
+    fetch_plan_with_raw(access_token).ok().map(|(snap, _)| snap)
 }
 
 /// Same as [`fetch_plan_snapshot`], plus the parsed `usage-summary` body.
 pub fn fetch_plan_with_raw(
     access_token: &str,
-) -> Option<(CursorAccountSnapshot, serde_json::Value)> {
-    let jwt = extract_cursor_jwt(access_token)?;
-    let claims = jwt::decode_claims(&jwt)?;
-    let raw = remote::fetch_usage_summary(&claims.sub, &jwt).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    Some((snapshot_from_usage_json(&v), v))
+) -> Result<(CursorAccountSnapshot, serde_json::Value), PlanFetchError> {
+    let jwt = extract_cursor_jwt(access_token).ok_or(PlanFetchError::Token)?;
+    let claims = jwt::decode_claims(&jwt).ok_or(PlanFetchError::Token)?;
+    let raw = remote::fetch_usage_summary(&claims.sub, &jwt).map_err(|err| match err {
+        remote::FetchError::Auth => PlanFetchError::Auth,
+        remote::FetchError::Network => PlanFetchError::Network,
+        remote::FetchError::Status => PlanFetchError::Status,
+    })?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)?;
+    Ok((snapshot_from_usage_json(&v), v))
 }
 
 impl UsageAdapter for CursorAdapter {
@@ -294,6 +308,12 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/cursor/export.csv");
         fs::read_to_string(path).expect("fixtures/cursor/export.csv")
+    }
+
+    #[test]
+    fn plan_fetch_rejects_garbage_token() {
+        assert_eq!(fetch_plan_with_raw("nope").unwrap_err(), PlanFetchError::Token);
+        assert!(fetch_plan_snapshot("nope").is_none());
     }
 
     #[test]

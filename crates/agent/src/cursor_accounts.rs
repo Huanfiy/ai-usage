@@ -125,6 +125,7 @@ pub fn public_views(file: &CursorAccountsFile) -> Vec<AccountView> {
                 stored: true,
                 snapshot: CursorAccountSnapshot::default(),
                 usage_raw: None,
+                usage_error: None,
             }
         })
         .collect()
@@ -141,6 +142,8 @@ pub struct AccountView {
     pub snapshot: CursorAccountSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_raw: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_error: Option<String>,
 }
 
 impl AccountView {
@@ -153,6 +156,7 @@ impl AccountView {
             stored,
             snapshot: preview.snapshot.clone(),
             usage_raw: None,
+            usage_error: None,
         }
     }
 }
