@@ -14,7 +14,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 | 自身文件 | XDG；`--config` / `--data-dir` 可改 |
 | 解析器 | Claude Code、Codex、Grok、Cursor |
 
-架构：[docs/design/architecture.md](docs/design/architecture.md)。解析边界：[docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。需求原文：`goal.md`。冲突以代码与 `docs/design/` 为准。
+架构：[docs/design/architecture.md](docs/design/architecture.md)。解析边界：[docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。冲突以代码与 `docs/design/` 为准。对外说明以 [README.md](README.md) 为准；发布产物为 Linux x86_64 musl，由 tag 工作流产出。立项需求原文已移出工作区，git 历史 `65ac539` 可查。
 
 ## 目录结构
 
