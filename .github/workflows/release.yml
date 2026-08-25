@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binaries
+        run: ./run.sh build musl
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="ai-usage-${version}-x86_64-unknown-linux-musl"
+          dest="${RUNNER_TEMP}/${name}"
+          mkdir -p "${dest}/deploy"
+          cp target/x86_64-unknown-linux-musl/release/ai-usage-agent \
+             target/x86_64-unknown-linux-musl/release/ai-usage-dash \
+             LICENSE NOTICE \
+             "${dest}/"
+          cp deploy/ai-usage-agent.service deploy/ai-usage-dash.service "${dest}/deploy/"
+          tar -C "${RUNNER_TEMP}" -czf "${name}.tar.gz" "${name}"
+          sha256sum "${name}.tar.gz" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          name="ai-usage-${version}-x86_64-unknown-linux-musl"
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file .github/release-notes.md \
+            "${name}.tar.gz" \
+            SHA256SUMS
