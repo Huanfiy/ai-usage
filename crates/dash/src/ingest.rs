@@ -1,6 +1,6 @@
 use ai_usage_protocol::{
     account_host_id, is_account_scoped, is_known_source, is_valid_account_hash, normalize_timezone,
-    utc_day, IngestRequest, IngestResponse, UsageBucket, UsageSession,
+    utc_day, CursorAccountUsage, IngestRequest, IngestResponse, UsageBucket, UsageSession,
 };
 use anyhow::Result;
 use chrono::Utc;
@@ -80,9 +80,70 @@ pub fn ingest(
         upsert_session(&*tx, host_id, &session, &now)?;
         resp.sessions += 1;
     }
+    for usage in req.cursor_accounts {
+        let usage = usage.normalize();
+        if !is_valid_account_hash(&usage.account_hash) {
+            continue;
+        }
+        upsert_cursor_usage(&*tx, &usage, &now)?;
+    }
     tx.commit()?;
     resp.dropped.unknown_sources = unknown;
     Ok(resp)
+}
+
+/// 账号套餐快照按 `fetched_at` 新者胜：多机上报同一账号自动收敛到最新一份。
+fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO cursor_account_usage(
+            account_hash, account_label, membership, subscription_status, billing_cycle_end,
+            api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
+            bot_available, plan_used, plan_limit, included_cents, bonus_cents,
+            auto_used, auto_limit, fetched_at, updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+         ON CONFLICT(account_hash) DO UPDATE SET
+            account_label=excluded.account_label,
+            membership=excluded.membership,
+            subscription_status=excluded.subscription_status,
+            billing_cycle_end=excluded.billing_cycle_end,
+            api_percent=excluded.api_percent,
+            auto_percent=excluded.auto_percent,
+            bot_percent=excluded.bot_percent,
+            bot_period_start=excluded.bot_period_start,
+            bot_next_reset=excluded.bot_next_reset,
+            bot_available=excluded.bot_available,
+            plan_used=excluded.plan_used,
+            plan_limit=excluded.plan_limit,
+            included_cents=excluded.included_cents,
+            bonus_cents=excluded.bonus_cents,
+            auto_used=excluded.auto_used,
+            auto_limit=excluded.auto_limit,
+            fetched_at=excluded.fetched_at,
+            updated_at=excluded.updated_at
+         WHERE excluded.fetched_at >= cursor_account_usage.fetched_at",
+        params![
+            u.account_hash,
+            u.account_label,
+            u.membership,
+            u.subscription_status,
+            u.billing_cycle_end,
+            u.api_percent,
+            u.auto_percent,
+            u.bot_percent,
+            u.bot_period_start,
+            u.bot_next_reset,
+            u.bot_available.map(|b| b as i64),
+            u.plan_used,
+            u.plan_limit,
+            u.included_cents,
+            u.bonus_cents,
+            u.auto_used,
+            u.auto_limit,
+            u.fetched_at.to_rfc3339(),
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 fn bucket_host_id(machine_host_id: &str, bucket: &UsageBucket) -> Option<String> {
@@ -515,6 +576,79 @@ mod tests {
             assert_eq!(r.protected.buckets, 1);
             let n: i64 = c.query_row("SELECT input_tokens FROM usage_buckets", [], |r| r.get(0))?;
             assert_eq!(n, 100);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cursor_account_usage_latest_fetched_at_wins() {
+        use ai_usage_protocol::CursorAccountUsage;
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = hash_a();
+            let mk = |pct: f64, fetched: &str| CursorAccountUsage {
+                account_hash: h.clone(),
+                account_label: "a@x.com".into(),
+                api_percent: Some(pct),
+                bot_percent: Some(0.5),
+                bot_available: Some(true),
+                fetched_at: chrono::DateTime::parse_from_rfc3339(fetched)
+                    .unwrap()
+                    .with_timezone(&Utc),
+                ..CursorAccountUsage::default()
+            };
+            let send = |c: &Connection, usage: CursorAccountUsage| {
+                ingest(
+                    c,
+                    "hostA",
+                    "pc1",
+                    Some("0.1.0"),
+                    None,
+                    IngestRequest {
+                        schema_version: 1,
+                        hostname: Some("pc1".into()),
+                        agent_version: Some("0.1.0".into()),
+                        timezone: None,
+                        buckets: vec![],
+                        sessions: vec![],
+                        cursor_accounts: vec![usage],
+                    },
+                )
+                .unwrap()
+            };
+            send(c, mk(10.0, "2026-08-29T10:00:00Z"));
+            // 更旧的快照（另一台机器时钟滞后）不覆盖
+            send(c, mk(5.0, "2026-08-29T09:00:00Z"));
+            let pct: f64 = c.query_row(
+                "SELECT api_percent FROM cursor_account_usage WHERE account_hash=?1",
+                params![h],
+                |r| r.get(0),
+            )?;
+            assert_eq!(pct, 10.0);
+            // 更新的快照覆盖
+            send(c, mk(20.0, "2026-08-29T11:00:00Z"));
+            let pct: f64 = c.query_row(
+                "SELECT api_percent FROM cursor_account_usage WHERE account_hash=?1",
+                params![h],
+                |r| r.get(0),
+            )?;
+            assert_eq!(pct, 20.0);
+            let n: i64 =
+                c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| r.get(0))?;
+            assert_eq!(n, 1);
+            // 非法 hash 丢弃
+            let mut bad = mk(1.0, "2026-08-29T12:00:00Z");
+            bad.account_hash = "not-hex".into();
+            send(c, bad);
+            let n: i64 =
+                c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| r.get(0))?;
+            assert_eq!(n, 1);
+            let rows = crate::db::list_cursor_accounts(c)?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["bot_available"], true);
+            assert_eq!(rows[0]["bot_percent"], 0.5);
             Ok(())
         })
         .unwrap();

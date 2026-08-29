@@ -97,6 +97,27 @@ CREATE TABLE IF NOT EXISTS daily_rollups (
   total_tokens INTEGER NOT NULL,
   PRIMARY KEY (day, host_id, source, model, project)
 );
+CREATE TABLE IF NOT EXISTS cursor_account_usage (
+  account_hash TEXT PRIMARY KEY,
+  account_label TEXT NOT NULL,
+  membership TEXT,
+  subscription_status TEXT,
+  billing_cycle_end TEXT,
+  api_percent REAL,
+  auto_percent REAL,
+  bot_percent REAL,
+  bot_period_start TEXT,
+  bot_next_reset TEXT,
+  bot_available INTEGER,
+  plan_used INTEGER,
+  plan_limit INTEGER,
+  included_cents INTEGER,
+  bonus_cents INTEGER,
+  auto_used INTEGER,
+  auto_limit INTEGER,
+  fetched_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_buckets_start ON usage_buckets(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_buckets_host ON usage_buckets(host_id, bucket_start);
 CREATE INDEX IF NOT EXISTS idx_rollups_day ON daily_rollups(day);
@@ -291,6 +312,44 @@ pub fn token_count(conn: &Connection) -> Result<i64> {
         [],
         |r| r.get(0),
     )?)
+}
+
+/// 全部 Cursor 账号的最新套餐快照，按显示名排序。
+pub fn list_cursor_accounts(conn: &Connection) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT account_hash, account_label, membership, subscription_status, billing_cycle_end,
+                api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
+                bot_available, plan_used, plan_limit, included_cents, bonus_cents,
+                auto_used, auto_limit, fetched_at, updated_at
+         FROM cursor_account_usage
+         ORDER BY account_label COLLATE NOCASE",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "account_hash": r.get::<_, String>(0)?,
+                "account_label": r.get::<_, String>(1)?,
+                "membership": r.get::<_, Option<String>>(2)?,
+                "subscription_status": r.get::<_, Option<String>>(3)?,
+                "billing_cycle_end": r.get::<_, Option<String>>(4)?,
+                "api_percent": r.get::<_, Option<f64>>(5)?,
+                "auto_percent": r.get::<_, Option<f64>>(6)?,
+                "bot_percent": r.get::<_, Option<f64>>(7)?,
+                "bot_period_start": r.get::<_, Option<String>>(8)?,
+                "bot_next_reset": r.get::<_, Option<String>>(9)?,
+                "bot_available": r.get::<_, Option<i64>>(10)?.map(|v| v != 0),
+                "plan_used": r.get::<_, Option<i64>>(11)?,
+                "plan_limit": r.get::<_, Option<i64>>(12)?,
+                "included_cents": r.get::<_, Option<i64>>(13)?,
+                "bonus_cents": r.get::<_, Option<i64>>(14)?,
+                "auto_used": r.get::<_, Option<i64>>(15)?,
+                "auto_limit": r.get::<_, Option<i64>>(16)?,
+                "fetched_at": r.get::<_, String>(17)?,
+                "updated_at": r.get::<_, String>(18)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]

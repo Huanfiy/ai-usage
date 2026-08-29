@@ -66,6 +66,28 @@ export type HostRow = {
   agent_version?: string | null
   timezone?: string | null
 }
+export type CursorAccountRow = {
+  account_hash: string
+  account_label: string
+  membership?: string | null
+  subscription_status?: string | null
+  billing_cycle_end?: string | null
+  api_percent?: number | null
+  auto_percent?: number | null
+  bot_percent?: number | null
+  bot_period_start?: string | null
+  bot_next_reset?: string | null
+  bot_available?: boolean | null
+  plan_used?: number | null
+  plan_limit?: number | null
+  included_cents?: number | null
+  bonus_cents?: number | null
+  auto_used?: number | null
+  auto_limit?: number | null
+  fetched_at: string
+  updated_at: string
+}
+
 export type SessionRow = {
   host_id: string
   source: string
@@ -117,6 +139,7 @@ export const api = {
   activity: (q: Query) => get<Activity>('/v1/activity' + qs(q)),
   sessions: (q: Query) => get<{ items: SessionRow[] }>('/v1/sessions' + qs({ ...q, limit: 200 })),
   hosts: () => get<{ items: HostRow[] }>('/v1/hosts'),
+  cursorAccounts: () => get<{ items: CursorAccountRow[] }>('/v1/cursor-accounts'),
   filters: (q: Query) => get<{ sources: string[]; models: string[]; projects: string[] }>('/v1/filters' + qs(q)),
   tokens: () =>
     get<{

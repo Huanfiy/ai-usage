@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", get(sessions))
         .route("/v1/hosts", get(hosts))
         .route("/v1/hosts/{host_id}", delete(delete_host))
+        .route("/v1/cursor-accounts", get(cursor_accounts))
         .route("/v1/filters", get(filters))
         .route("/v1/tokens", get(list_tokens).post(create_token))
         .route("/v1/tokens/{host_id}", delete(revoke_token))
@@ -221,6 +222,18 @@ async fn sessions(
 async fn hosts(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     require_ui(&st, &headers)?;
     let out = st.db.with(query::hosts).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "items": out })))
+}
+
+async fn cursor_accounts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let out = st
+        .db
+        .with(db::list_cursor_accounts)
+        .map_err(ApiError::internal)?;
     Ok(Json(json!({ "items": out })))
 }
 

@@ -10,6 +10,7 @@ import {
   type SessionRow,
   type Summary,
 } from './api'
+import CursorAccountsPage from './components/CursorAccountsPage.vue'
 import DonutCard from './components/DonutCard.vue'
 import FilterPill from './components/FilterPill.vue'
 import Heatmap from './components/Heatmap.vue'
@@ -20,13 +21,16 @@ import TimeRangeBar from './components/TimeRangeBar.vue'
 import TrendChart from './components/TrendChart.vue'
 import { liveRange, loadStoredRange, presetLabel, saveStoredRange, type AppliedRange } from './timeRange'
 
-type Page = 'dash' | 'settings'
+type Page = 'dash' | 'cursor' | 'settings'
 const POLL_MS = 15_000
 
 const HIDE_KEY = 'ai-usage.hideProjects'
 
 function pageFromPath(path = location.pathname): Page {
-  return path.replace(/\/+$/, '').endsWith('/settings') ? 'settings' : 'dash'
+  const p = path.replace(/\/+$/, '')
+  if (p.endsWith('/settings')) return 'settings'
+  if (p.endsWith('/cursor')) return 'cursor'
+  return 'dash'
 }
 
 function readHide(): boolean {
@@ -152,7 +156,7 @@ function onRangeApply(r: AppliedRange) {
 }
 
 function go(next: Page) {
-  const path = next === 'settings' ? '/settings' : '/'
+  const path = next === 'settings' ? '/settings' : next === 'cursor' ? '/cursor' : '/'
   if (location.pathname !== path) history.pushState({}, '', path)
   page.value = next
 }
@@ -212,6 +216,7 @@ function hostLabel(hostId: string, hostname: string): string {
       </div>
       <nav class="nav" aria-label="页面">
         <a href="/" :class="{ active: page === 'dash' }" @click.prevent="go('dash')">看板</a>
+        <a href="/cursor" :class="{ active: page === 'cursor' }" @click.prevent="go('cursor')">Cursor</a>
         <a href="/settings" :class="{ active: page === 'settings' }" @click.prevent="go('settings')">设置</a>
       </nav>
     </header>
@@ -261,6 +266,8 @@ function hostLabel(hostId: string, hostname: string): string {
       </section>
       <SessionList :sessions="sessions" :hosts="hosts" />
     </template>
+
+    <CursorAccountsPage v-else-if="page === 'cursor'" />
 
     <SettingsPage
       v-else
