@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { api, type CursorAccountRow } from '../api'
-import { fmtTime } from '../format'
+import { api, type BreakdownItem, type CursorAccountRow, type Query } from '../api'
+import { fmtTime, fmtTokens, fmtUsd } from '../format'
 
 const items = ref<CursorAccountRow[]>([])
 const err = ref('')
 const loading = ref(false)
 const loaded = ref(false)
+
+type AcctUsage = {
+  loading: boolean
+  error: string
+  models: BreakdownItem[]
+  totalTokens: number
+  totalCost: number
+}
+const usage = ref<Record<string, AcctUsage>>({})
+const hoverHash = ref('')
 
 async function load() {
   loading.value = true
@@ -67,6 +77,47 @@ function metaBits(a: CursorAccountRow): string {
   if (a.bot_next_reset) bits.push(`Bot 重置 ${String(a.bot_next_reset).slice(0, 10)}`)
   return bits.join(' · ')
 }
+
+const USAGE_DAYS = 30
+
+// 悬浮时按需拉取该账号（acct:<hash>）近 30 天的模型分布与费用估算
+async function onEnter(a: CursorAccountRow) {
+  hoverHash.value = a.account_hash
+  const key = a.account_hash
+  const cached = usage.value[key]
+  if (cached && !cached.error && !cached.loading) return
+  usage.value[key] = { loading: true, error: '', models: [], totalTokens: 0, totalCost: 0 }
+  const to = new Date()
+  const from = new Date(to.getTime() - USAGE_DAYS * 86_400_000)
+  const q: Query = {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    host: `acct:${key}`,
+  }
+  try {
+    const r = await api.breakdown(q, 'model')
+    const all = r.items ?? []
+    usage.value[key] = {
+      loading: false,
+      error: '',
+      models: all.slice(0, 10),
+      totalTokens: all.reduce((s, x) => s + (x.tokens || 0), 0),
+      totalCost: all.reduce((s, x) => s + (x.cost_usd || 0), 0),
+    }
+  } catch (e) {
+    usage.value[key] = {
+      loading: false,
+      error: e instanceof Error ? e.message : String(e),
+      models: [],
+      totalTokens: 0,
+      totalCost: 0,
+    }
+  }
+}
+
+function onLeave() {
+  hoverHash.value = ''
+}
 </script>
 
 <template>
@@ -91,7 +142,13 @@ function metaBits(a: CursorAccountRow): string {
       </div>
 
       <div v-else class="acct-grid">
-        <article v-for="a in items" :key="a.account_hash" class="acct">
+        <article
+          v-for="a in items"
+          :key="a.account_hash"
+          class="acct"
+          @mouseenter="onEnter(a)"
+          @mouseleave="onLeave"
+        >
           <div class="acct-head">
             <div class="acct-email" :title="a.account_label">{{ a.account_label }}</div>
             <div class="acct-chips">
@@ -124,6 +181,29 @@ function metaBits(a: CursorAccountRow): string {
 
           <div v-if="metaBits(a)" class="meta">{{ metaBits(a) }}</div>
           <div class="foot">快照 {{ fmtTime(a.fetched_at) }}</div>
+
+          <div v-if="hoverHash === a.account_hash" class="usage-pop">
+            <div class="pop-title">近 {{ USAGE_DAYS }} 天模型用量 · 费用为估算</div>
+            <div v-if="usage[a.account_hash]?.loading" class="pop-hint">加载中…</div>
+            <div v-else-if="usage[a.account_hash]?.error" class="pop-hint pop-err">
+              {{ usage[a.account_hash].error }}
+            </div>
+            <template v-else>
+              <div v-if="!usage[a.account_hash]?.models.length" class="pop-hint">窗口内无用量</div>
+              <template v-else>
+                <div v-for="m in usage[a.account_hash].models" :key="m.key" class="pop-row">
+                  <span class="pop-model" :title="m.key">{{ m.key }}</span>
+                  <span class="pop-tokens">{{ fmtTokens(m.tokens) }}</span>
+                  <b class="pop-cost">{{ fmtUsd(m.cost_usd) }}</b>
+                </div>
+                <div class="pop-row pop-total">
+                  <span class="pop-model">合计</span>
+                  <span class="pop-tokens">{{ fmtTokens(usage[a.account_hash].totalTokens) }}</span>
+                  <b class="pop-cost">{{ fmtUsd(usage[a.account_hash].totalCost) }}</b>
+                </div>
+              </template>
+            </template>
+          </div>
         </article>
       </div>
     </section>
@@ -166,6 +246,71 @@ function metaBits(a: CursorAccountRow): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  position: relative;
+}
+.acct:hover {
+  border-color: #3d4b5e;
+}
+.usage-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+.pop-title {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.pop-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+.pop-err {
+  color: var(--rose);
+}
+.pop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+}
+.pop-model {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.pop-tokens {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.pop-cost {
+  color: var(--amber);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.pop-total {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+.pop-total .pop-model {
+  color: var(--muted);
 }
 .acct-head {
   display: flex;
