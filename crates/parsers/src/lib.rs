@@ -122,7 +122,7 @@ pub fn parse_adapters(
                         adapter.parse(ctx)
                     }
                 })) {
-                    Ok(r) => r,
+                    Ok(r) => fail_closed(&id, r),
                     Err(_) => ParseResult {
                         skipped: true,
                         warnings: vec![format!("{id}: parser panicked")],
@@ -140,4 +140,82 @@ pub fn parse_adapters(
         .into_iter()
         .flatten()
         .collect()
+}
+
+/// Root detected but nothing parsed and errors occurred → mark skipped so the
+/// agent keeps its incremental state (a transient failure must not turn into a
+/// full re-upload after recovery). Account-scoped sources manage their own
+/// skip and per-account prune sets, so they are exempt.
+fn fail_closed(id: &str, mut r: ParseResult) -> ParseResult {
+    if !r.skipped
+        && r.attempted_account_hashes.is_empty()
+        && r.buckets.is_empty()
+        && r.sessions.is_empty()
+        && !r.warnings.is_empty()
+    {
+        r.skipped = true;
+        r.warnings.push(format!("{id}: 本轮无成功解析，保留增量 state 不修剪"));
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FakeAdapter {
+        result: ParseResult,
+    }
+
+    impl UsageAdapter for FakeAdapter {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn detect(&self, _ctx: &ParseCtx) -> Vec<PathBuf> {
+            vec![PathBuf::from("/tmp/fake")]
+        }
+        fn parse(&self, _ctx: &ParseCtx) -> ParseResult {
+            self.result.clone()
+        }
+    }
+
+    fn ctx() -> ParseCtx {
+        ParseCtx::new(PathBuf::from("/nonexistent"), PathBuf::from("/nonexistent"))
+    }
+
+    #[test]
+    fn all_failed_local_source_is_fail_closed() {
+        let adapters: Vec<Box<dyn UsageAdapter>> = vec![Box::new(FakeAdapter {
+            result: ParseResult {
+                warnings: vec!["fake: cannot read x".into()],
+                ..ParseResult::default()
+            },
+        })];
+        let out = parse_adapters(&ctx(), &adapters, 1);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1.skipped, "root exists + all failed → skipped");
+    }
+
+    #[test]
+    fn empty_without_warnings_stays_prunable() {
+        let adapters: Vec<Box<dyn UsageAdapter>> = vec![Box::new(FakeAdapter {
+            result: ParseResult::default(),
+        })];
+        let out = parse_adapters(&ctx(), &adapters, 1);
+        assert!(!out[0].1.skipped, "no logs at all → normal prune path");
+    }
+
+    #[test]
+    fn account_scoped_source_is_exempt() {
+        let adapters: Vec<Box<dyn UsageAdapter>> = vec![Box::new(FakeAdapter {
+            result: ParseResult {
+                warnings: vec!["one account failed".into()],
+                attempted_account_hashes: vec!["a".into()],
+                succeeded_account_hashes: vec![],
+                ..ParseResult::default()
+            },
+        })];
+        let out = parse_adapters(&ctx(), &adapters, 1);
+        assert!(!out[0].1.skipped, "account prune sets govern instead");
+    }
 }
