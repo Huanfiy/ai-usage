@@ -8,6 +8,14 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 const TIMEOUT_SECS: u64 = 20;
 const SUMMARY_TIMEOUT_SECS: u64 = 10;
 
+/// Bot/Sand 配额走 Cursor 私有 ConnectRPC，只认原生 access token（Bearer），
+/// 网站登录的 `type=web` JWT 会被 401/403 拒绝。
+const SAND_DEFAULT_BASE: &str = "https://api2.cursor.sh";
+const SAND_PATH: &str = "/aiserver.v1.DashboardService/GetSandUsageStatus";
+/// 随仓库版本更新的客户端版本头快照。
+const SAND_CLIENT_VERSION: &str = "3.17.21";
+const SAND_TIMEOUT_SECS: u64 = 10;
+
 #[derive(Debug)]
 pub enum FetchError {
     Auth,
@@ -30,6 +38,33 @@ pub fn fetch_usage_summary(sub: &str, jwt: &str) -> Result<String, FetchError> {
             SUMMARY_TIMEOUT_SECS,
         )
     })
+}
+
+/// `POST GetSandUsageStatus`：Bearer + Connect 头，空对象请求体。
+pub fn fetch_sand_usage(jwt: &str) -> Result<String, FetchError> {
+    let resp = ureq::post(&sand_url())
+        .set("Authorization", &format!("Bearer {jwt}"))
+        .set("Content-Type", "application/json")
+        .set("Connect-Protocol-Version", "1")
+        .set("x-cursor-client-type", "sand")
+        .set("x-cursor-client-version", SAND_CLIENT_VERSION)
+        .timeout(Duration::from_secs(SAND_TIMEOUT_SECS))
+        .send_string("{}");
+    match resp {
+        Ok(resp) => resp.into_string().map_err(|_| FetchError::Network),
+        Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => Err(FetchError::Auth),
+        Err(ureq::Error::Status(_, _)) => Err(FetchError::Status),
+        Err(_) => Err(FetchError::Network),
+    }
+}
+
+fn sand_url() -> String {
+    let base = std::env::var("CURSOR_SAND_BASE_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| SAND_DEFAULT_BASE.to_string());
+    format!("{base}{SAND_PATH}")
 }
 
 fn fetch_with_cookies(

@@ -386,6 +386,7 @@ mod tests {
                 timezone: None,
                 buckets,
                 sessions: vec![session()],
+                cursor_accounts: vec![],
             },
         )
         .unwrap();

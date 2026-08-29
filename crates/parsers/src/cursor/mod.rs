@@ -2,8 +2,12 @@
 //!
 //! Layers: `paths` finds `state.vscdb` → `local` reads the JWT row → `remote`
 //! fetches the CSV → `csv` turns rows into buckets. The JWT never leaves this
-//! crate except as `account_hash` / `account_label`. Extra accounts come from
-//! the agent secrets file, not from a second IDE login.
+//! crate except as `account_hash` / `account_label`.
+//!
+//! Collection is opt-in: only accounts the user joined (the agent secrets
+//! file, `cursor_extra_accounts`) are collected. The IDE login is detected
+//! for display but never auto-enrolled and never auto-refreshes a stored
+//! token — the user controls what gets collected.
 
 mod csv;
 mod extract;
@@ -22,16 +26,18 @@ use crate::{ParseCtx, ParseResult, UsageAdapter};
 
 pub struct CursorAdapter;
 
-const LOGIN_HINT: &str = "Cursor: 未登录。请在 Cursor 中登录后再同步，或在采集端面板导入凭证。";
-const RELLOGIN_HINT: &str = "Cursor: 会话已失效，请在 Cursor 中重新登录。";
+/// No joined accounts: source is idle, not failing. Agent treats this skip as
+/// "not enrolled" instead of an error.
+pub const CURSOR_NOT_ENROLLED: &str = "Cursor: 未加入采集账号；在面板加入后开始采集。";
 const SKIP_HINT: &str = "Cursor: 拉取用量失败（网络或服务端），本轮跳过。";
-const DB_HINT: &str = "Cursor: 无法读取本地登录状态，本轮跳过。";
 const CSV_HINT: &str = "Cursor: 用量 CSV 格式无法解析，本轮跳过。";
-const EXTRA_BAD_HINT: &str = "Cursor: 额外凭证无法解析，请重新导入。";
+const EXTRA_BAD_HINT: &str = "Cursor: 已加入的凭证无法解析，请重新导入。";
 const EXTRA_EXPIRED: &str = "会话已过期，请重新导入。";
 const CONFIGURED_ACCOUNTS: &str = "cursor-accounts";
 
-pub use extract::{extract_cursor_previews, snapshot_from_usage_json, CursorAccountSnapshot};
+pub use extract::{
+    extract_cursor_previews, sand_overlay, snapshot_from_usage_json, CursorAccountSnapshot,
+};
 
 #[derive(Debug, Clone)]
 pub struct CursorTokenPreview {
@@ -39,6 +45,8 @@ pub struct CursorTokenPreview {
     pub account_hash: String,
     pub account_label: String,
     pub exp: Option<i64>,
+    /// JWT `type` 声明：`web`（网站登录，Bot 不可用）或原生 token（None/其它）。
+    pub token_type: Option<String>,
     pub snapshot: CursorAccountSnapshot,
 }
 
@@ -82,6 +90,7 @@ pub fn preview_cursor_token(raw: &str) -> Option<CursorTokenPreview> {
         account_hash,
         account_label,
         exp: claims.exp,
+        token_type: claims.token_type,
         snapshot: CursorAccountSnapshot::default(),
     })
 }
@@ -112,6 +121,10 @@ pub fn fetch_plan_snapshot(access_token: &str) -> Option<CursorAccountSnapshot> 
 }
 
 /// Same as [`fetch_plan_snapshot`], plus the parsed `usage-summary` body.
+///
+/// 额外尝试 Bot/Sand 配额并叠加进快照：`type=web` 的凭证预知调不了原生
+/// RPC，直接跳过；其余失败（401/网络）也只是 Bot 字段留空，不算错误。
+/// Sand 原始 JSON 以 `botUsage` 键并入返回的 raw，供面板查看。
 pub fn fetch_plan_with_raw(
     access_token: &str,
 ) -> Result<(CursorAccountSnapshot, serde_json::Value), PlanFetchError> {
@@ -122,8 +135,19 @@ pub fn fetch_plan_with_raw(
         remote::FetchError::Network => PlanFetchError::Network,
         remote::FetchError::Status => PlanFetchError::Status,
     })?;
-    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)?;
-    Ok((snapshot_from_usage_json(&v), v))
+    let mut v: serde_json::Value = serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)?;
+    let mut snap = snapshot_from_usage_json(&v);
+    if claims.token_type.as_deref() != Some("web") {
+        if let Ok(sand_raw) = remote::fetch_sand_usage(&jwt) {
+            if let Ok(sand) = serde_json::from_str::<serde_json::Value>(&sand_raw) {
+                sand_overlay(&mut snap, &sand);
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("botUsage".into(), sand);
+                }
+            }
+        }
+    }
+    Ok((snap, v))
 }
 
 impl UsageAdapter for CursorAdapter {
@@ -147,42 +171,27 @@ impl UsageAdapter for CursorAdapter {
 struct Cred {
     token: String,
     cached_email: String,
-    from_ide: bool,
+    report_since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// 只采集已加入的账号（`cursor_extra_accounts`）。IDE 登录不自动计入——
+/// 用户在面板「加入采集」后，其凭证才会出现在这里（严格用加入时那份 JWT）。
 fn parse_with_fetch(
     ctx: &ParseCtx,
     fetch: impl Fn(&str, &str) -> Result<String, remote::FetchError>,
 ) -> ParseResult {
     let mut warnings = Vec::new();
-    let mut creds = Vec::new();
 
-    if let Some(db) = paths::detect_state_db(ctx) {
-        match local::read_auth(&db) {
-            Ok(Some(auth)) => creds.push(Cred {
-                token: auth.access_token,
-                cached_email: auth.cached_email,
-                from_ide: true,
-            }),
-            Ok(None) => {
-                if ctx.env.cursor_extra_accounts.is_empty() {
-                    return skipped(LOGIN_HINT);
-                }
-            }
-            Err(_) => {
-                if ctx.env.cursor_extra_accounts.is_empty() {
-                    return skipped(DB_HINT);
-                }
-                warnings.push(DB_HINT.to_string());
-            }
-        }
+    if ctx.env.cursor_extra_accounts.is_empty() {
+        return skipped(CURSOR_NOT_ENROLLED);
     }
 
+    let mut creds = Vec::new();
     for extra in &ctx.env.cursor_extra_accounts {
         creds.push(Cred {
             token: extra.access_token.clone(),
             cached_email: extra.account_label.clone(),
-            from_ide: false,
+            report_since: extra.report_since,
         });
     }
 
@@ -190,11 +199,7 @@ fn parse_with_fetch(
     let mut unique = Vec::new();
     for cred in creds {
         let Some(claims) = jwt::decode_claims(&cred.token) else {
-            warnings.push(if cred.from_ide {
-                RELLOGIN_HINT.to_string()
-            } else {
-                EXTRA_BAD_HINT.to_string()
-            });
+            warnings.push(EXTRA_BAD_HINT.to_string());
             continue;
         };
         let hash = account_hash_from_sub(&claims.sub);
@@ -223,11 +228,7 @@ fn parse_with_fetch(
         let csv = match fetch(&claims.sub, &cred.token) {
             Ok(text) => text,
             Err(remote::FetchError::Auth) => {
-                warnings.push(if cred.from_ide {
-                    RELLOGIN_HINT.to_string()
-                } else {
-                    format!("Cursor: {label} {EXTRA_EXPIRED}")
-                });
+                warnings.push(format!("Cursor: {label} {EXTRA_EXPIRED}"));
                 continue;
             }
             Err(remote::FetchError::Network | remote::FetchError::Status) => {
@@ -238,7 +239,7 @@ fn parse_with_fetch(
                 continue;
             }
         };
-        let entries = match csv::parse_export_csv(&csv) {
+        let mut entries = match csv::parse_export_csv(&csv) {
             Ok(rows) => rows,
             Err(_) => {
                 warnings.push(format!(
@@ -248,6 +249,11 @@ fn parse_with_fetch(
                 continue;
             }
         };
+        // 统计起始为固定 cutoff：cutoff 前的条目永不进 live 集，
+        // state 修剪一次后稳定，不会像滚动窗那样反复重传。
+        if let Some(since) = cred.report_since {
+            entries.retain(|e| e.timestamp >= since);
+        }
         let mut rows = entries_to_buckets(&entries);
         for b in &mut rows {
             b.account_hash = account_hash.clone();
@@ -341,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_logged_out_skips_without_network() {
+    fn no_enrolled_accounts_is_idle_skip_without_network() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("state.vscdb");
         let conn = rusqlite::Connection::open(&db).unwrap();
@@ -358,9 +364,122 @@ mod tests {
         };
         let r = CursorAdapter.parse(&ctx);
         assert!(r.skipped);
-        assert!(r.warnings.iter().any(|w| w.contains("未登录")));
+        assert!(r.warnings.iter().any(|w| w == CURSOR_NOT_ENROLLED));
         assert!(r.buckets.is_empty());
         assert!(r.sessions.is_empty());
+    }
+
+    #[test]
+    fn ide_login_is_not_auto_collected() {
+        // IDE 已登录但未「加入采集」：不发任何网络请求，标记为未启用。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.vscdb");
+        let token = jwt::fake_jwt("user_ide", "ide@x.com");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable(key, value) VALUES('cursorAuth/accessToken', ?1)",
+            rusqlite::params![token],
+        )
+        .unwrap();
+        drop(conn);
+        let ctx = ParseCtx {
+            home: dir.path().to_path_buf(),
+            cache_dir: dir.path().join("cache"),
+            env: AdapterEnv {
+                cursor_state_db: Some(db),
+                ..AdapterEnv::default()
+            },
+        };
+        let r = parse_with_fetch(&ctx, |_, _| panic!("must not fetch"));
+        assert!(r.skipped);
+        assert!(r.warnings.iter().any(|w| w == CURSOR_NOT_ENROLLED));
+        assert!(r.attempted_account_hashes.is_empty());
+    }
+
+    #[test]
+    fn report_since_is_fixed_cutoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = jwt::fake_jwt("user_since", "s@x.com");
+        let csv = fixture_csv();
+        let mk_ctx = |since: Option<chrono::DateTime<chrono::Utc>>| ParseCtx {
+            home: dir.path().to_path_buf(),
+            cache_dir: dir.path().join("cache"),
+            env: AdapterEnv {
+                cursor_extra_accounts: vec![CursorExtraAccount {
+                    access_token: token.clone(),
+                    account_label: "s@x.com".into(),
+                    report_since: since,
+                }],
+                ..AdapterEnv::default()
+            },
+        };
+        let all = parse_with_fetch(&mk_ctx(None), |_, _| Ok(csv.clone()));
+        assert!(!all.skipped);
+        let total: i64 = all.buckets.iter().map(|b| b.total_tokens).sum();
+        assert!(total > 0);
+        // 起始设在 10:30 之后：只剩 10:45 那行
+        let since = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let cut = parse_with_fetch(&mk_ctx(Some(since)), |_, _| Ok(csv.clone()));
+        assert!(!cut.skipped);
+        let cut_total: i64 = cut.buckets.iter().map(|b| b.total_tokens).sum();
+        assert!(cut_total > 0 && cut_total < total, "{cut_total} vs {total}");
+        assert!(cut
+            .buckets
+            .iter()
+            .all(|b| b.bucket_start >= since - chrono::Duration::minutes(30)));
+        // 起始在未来：无条目但账号 attempted/succeeded 照记，state 不误剪
+        let future = chrono::DateTime::parse_from_rfc3339("2099-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let none = parse_with_fetch(&mk_ctx(Some(future)), |_, _| Ok(csv.clone()));
+        assert!(!none.skipped);
+        assert!(none.buckets.is_empty());
+        assert_eq!(none.succeeded_account_hashes.len(), 1);
+    }
+
+    #[test]
+    fn enrolled_account_uses_stored_token_not_ide() {
+        // 严格用加入时那份 JWT：IDE 换发新 token 后仍用存量凭证请求。
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.vscdb");
+        let ide_token = jwt::fake_jwt("user_same", "s@x.com");
+        let stored_token = jwt::fake_jwt_exp("user_same", "s@x.com", Some(1_700_000_000));
+        assert_ne!(ide_token, stored_token);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable(key, value) VALUES('cursorAuth/accessToken', ?1)",
+            rusqlite::params![ide_token],
+        )
+        .unwrap();
+        drop(conn);
+        let csv = fixture_csv();
+        let seen_tokens = std::sync::Mutex::new(Vec::new());
+        let ctx = ParseCtx {
+            home: dir.path().to_path_buf(),
+            cache_dir: dir.path().join("cache"),
+            env: AdapterEnv {
+                cursor_state_db: Some(db),
+                cursor_extra_accounts: vec![CursorExtraAccount {
+                    access_token: stored_token.clone(),
+                    account_label: "s@x.com".into(),
+                    report_since: None,
+                }],
+                ..AdapterEnv::default()
+            },
+        };
+        let r = parse_with_fetch(&ctx, |_, token| {
+            seen_tokens.lock().unwrap().push(token.to_string());
+            Ok(csv.clone())
+        });
+        assert!(!r.skipped);
+        let tokens = seen_tokens.into_inner().unwrap();
+        assert_eq!(tokens, vec![stored_token]);
     }
 
     #[test]
@@ -373,6 +492,7 @@ mod tests {
                 cursor_extra_accounts: vec![CursorExtraAccount {
                     access_token: jwt::fake_jwt("user_x", "a@x.com"),
                     account_label: "a@x.com".into(),
+                    report_since: None,
                 }],
                 ..AdapterEnv::default()
             },
@@ -401,6 +521,7 @@ mod tests {
                 cursor_extra_accounts: vec![CursorExtraAccount {
                     access_token: token,
                     account_label: "e@x.com".into(),
+                    report_since: None,
                 }],
                 ..AdapterEnv::default()
             },
@@ -425,10 +546,12 @@ mod tests {
                     CursorExtraAccount {
                         access_token: good,
                         account_label: "a@x.com".into(),
+                        report_since: None,
                     },
                     CursorExtraAccount {
                         access_token: bad,
                         account_label: "b@x.com".into(),
+                        report_since: None,
                     },
                 ],
                 ..AdapterEnv::default()
@@ -475,6 +598,7 @@ mod tests {
                 cursor_extra_accounts: vec![CursorExtraAccount {
                     access_token: token,
                     account_label: "s@x.com".into(),
+                    report_since: None,
                 }],
                 ..AdapterEnv::default()
             },

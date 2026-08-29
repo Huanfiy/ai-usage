@@ -26,6 +26,15 @@ pub struct CursorAccountSnapshot {
     pub api_percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_percent: Option<f64>,
+    /// Bot/Sand 配额：`GetSandUsageStatus.usagePercent` 原始数值，不换算。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_period_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_next_reset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_available: Option<bool>,
     /// Included API pool, cents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_used: Option<i64>,
@@ -49,6 +58,10 @@ impl CursorAccountSnapshot {
             && self.billing_cycle_end.is_none()
             && self.api_percent.is_none()
             && self.auto_percent.is_none()
+            && self.bot_percent.is_none()
+            && self.bot_period_start.is_none()
+            && self.bot_next_reset.is_none()
+            && self.bot_available.is_none()
             && self.plan_used.is_none()
             && self.plan_limit.is_none()
             && self.included_cents.is_none()
@@ -56,6 +69,16 @@ impl CursorAccountSnapshot {
             && self.auto_used.is_none()
             && self.auto_limit.is_none()
     }
+}
+
+/// 把 `GetSandUsageStatus` 的 JSON 叠加进快照的 Bot 字段。
+/// `usagePercent` 保持服务端原始数值，不擅自乘 100 或换算 token。
+pub fn sand_overlay(snap: &mut CursorAccountSnapshot, v: &Value) {
+    let Some(obj) = v.as_object() else { return };
+    snap.bot_percent = obj.get("usagePercent").and_then(as_f64);
+    snap.bot_period_start = first_str(obj, &["currentPeriodStart"]);
+    snap.bot_next_reset = first_str(obj, &["nextResetTimestampUtc"]);
+    snap.bot_available = obj.get("hasAvailableUsage").and_then(Value::as_bool);
 }
 
 /// Parse `GET /api/usage-summary` (or an equivalent object) into the panel snapshot.

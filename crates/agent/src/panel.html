@@ -21,6 +21,7 @@
       font-family: "IBM Plex Sans", "Noto Sans CJK SC", "Source Han Sans SC", ui-sans-serif, system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
+    html { color-scheme: dark; }
     html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
     button, input, textarea, select { font: inherit; color: inherit; }
     button {
@@ -29,7 +30,12 @@
         transform 50ms ease-out, box-shadow 40ms ease-out, opacity 40ms ease-out;
     }
     button:disabled { cursor: not-allowed; }
-    .app { max-width: 1080px; margin: 0 auto; padding: 16px 24px 56px; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--mint);
+      outline-offset: 2px;
+    }
+    .app { max-width: 1080px; margin: 0 auto; padding: 16px 24px 16px; }
     .top {
       display: flex;
       align-items: flex-end;
@@ -92,6 +98,7 @@
       background: #3a2222;
       color: #f09a9a;
     }
+    .btn.mini { padding: 4px 9px; font-size: 11px; }
     .btn.primary:active:not(:disabled),
     .btn.danger:active:not(:disabled) {
       transform: scale(0.96);
@@ -102,17 +109,19 @@
       flex-wrap: wrap;
       gap: 8px;
       margin-bottom: 12px;
+      align-items: stretch;
     }
     .kpi {
       background: var(--bg-elev);
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 8px 12px;
       min-width: 0;
     }
-    .kpi-sync { flex: 0 1 260px; }
+    .kpi-sync { flex: 1 1 420px; }
     .kpi-tools { flex: 0 0 auto; position: relative; z-index: 2; }
     .kpi .label { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
+    .kpi .label .syncing { color: var(--mint); }
     .sync-lines {
       display: flex;
       flex-direction: column;
@@ -123,7 +132,7 @@
     }
     .sync-line {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 10px;
     }
     .sync-line .k {
@@ -134,7 +143,64 @@
     }
     .sync-line .t { color: var(--text); }
     .sync-line.idle .t { color: var(--muted); }
-    .sync-line.err .t { color: var(--rose); }
+    .sync-line.has-err .t { color: var(--rose); }
+    .sync-line .next { color: var(--muted); font-size: 11px; }
+    .sync-line .itv-wrap {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    input.itv {
+      width: 64px;
+      background: var(--bg-elev-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 3px 8px;
+      font-size: 12px;
+      text-align: center;
+    }
+    .sync-errline {
+      color: var(--rose);
+      font-size: 12px;
+      line-height: 1.4;
+      padding-left: 56px;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .itv-hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    .report { margin-top: 8px; font-size: 12px; }
+    .report summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      user-select: none;
+    }
+    .report summary:hover { color: var(--text); }
+    .report-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .report-src {
+      font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      color: var(--text);
+      min-width: 92px;
+    }
+    .report-warn {
+      color: var(--amber);
+      font-size: 11px;
+      margin: 2px 0 0 100px;
+      overflow-wrap: anywhere;
+    }
     .tool-icons { display: flex; gap: 6px; margin-top: 6px; }
     .tool {
       position: relative;
@@ -157,7 +223,11 @@
       left: 50%;
       bottom: calc(100% + 8px);
       transform: translateX(-50%) translateY(4px);
-      white-space: nowrap;
+      white-space: pre-line;
+      max-width: 420px;
+      width: max-content;
+      text-align: left;
+      overflow-wrap: anywhere;
       padding: 6px 10px;
       border-radius: 8px;
       background: rgba(11, 14, 18, 0.94);
@@ -172,7 +242,7 @@
       transition: opacity 0.06s ease, transform 0.06s ease;
       transition-delay: 0s;
     }
-    .tool:hover::after {
+    .tool:hover::after, .tool:focus-visible::after {
       opacity: 1;
       transform: translateX(-50%) translateY(0);
       transition-delay: 0.08s;
@@ -301,6 +371,9 @@
     }
     @media (prefers-reduced-motion: reduce) {
       .icon-btn.pulse { animation: none; }
+      .icon-btn.spin svg { animation: none; }
+      .btn.primary:active:not(:disabled),
+      .btn.danger:active:not(:disabled) { transform: none; }
     }
     .json-head {
       display: flex;
@@ -325,7 +398,7 @@
       font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
       white-space: pre;
     }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .chip {
       border: 1px solid var(--line);
       background: var(--bg-elev);
@@ -338,7 +411,7 @@
     .chip.warn { border-color: #5a4630; color: var(--amber); }
     .chip.bad { border-color: #5a3030; color: var(--rose); }
     .usage { display: flex; flex-direction: column; gap: 8px; }
-    .usage .row {
+    .usage .meter-row {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
@@ -347,7 +420,7 @@
       color: var(--muted);
       margin-bottom: 4px;
     }
-    .usage .row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .usage .meter-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
     .bar {
       height: 6px;
       background: #1c2430;
@@ -365,6 +438,24 @@
       justify-content: space-between;
       gap: 8px;
     }
+    .meta-col {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .since-link {
+      background: none;
+      border: 0;
+      padding: 0;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      text-decoration: underline dotted;
+      text-underline-offset: 3px;
+    }
+    .since-link:hover { color: var(--mint); }
     .empty {
       color: var(--muted);
       padding: 28px 8px;
@@ -379,13 +470,20 @@
       gap: 8px 12px;
     }
     .fields.even { grid-template-columns: 1fr 1fr; }
-    .fields.triple {
-      grid-template-columns: minmax(140px, 1.2fr) minmax(100px, 0.7fr) minmax(100px, 0.7fr);
-    }
     .fields + .fields { margin-top: 8px; }
     .fields label.field { margin: 0; }
+    .field-hint { color: var(--muted); font-size: 11px; margin-top: 3px; }
     .dest-label { margin: 10px 0 6px; font-size: 12px; color: var(--muted); }
-    .dest-list { display: flex; flex-direction: column; gap: 8px; }
+    .dest-list { display: flex; flex-direction: column; gap: 10px; }
+    .dest-block {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: var(--bg-elev-2);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
     .dest-row {
       display: flex;
       gap: 8px;
@@ -393,12 +491,30 @@
     }
     .dest-row .dest-url { flex: 1.4 1 160px; min-width: 0; }
     .dest-row .dest-token { flex: 1 1 120px; min-width: 0; }
-    .dest-row .icon-btn { flex-shrink: 0; }
+    .dest-row .icon-btn, .dest-row .btn { flex-shrink: 0; }
+    .dest-status {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      min-height: 20px;
+    }
+    .dest-err {
+      color: var(--rose);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
     .card-cfg { padding: 12px 14px; }
     .card-cfg .card-head { margin-bottom: 8px; }
     .card-cfg label.field input {
       display: block;
       margin-top: 4px;
+      width: 100%;
     }
     .cfg-foot {
       display: flex;
@@ -408,6 +524,7 @@
       margin-top: 10px;
       flex-wrap: wrap;
     }
+    .check-wrap { display: flex; flex-direction: column; gap: 2px; }
     input[type="text"], input[type="password"], textarea {
       width: 100%;
       background: var(--bg-elev-2);
@@ -417,26 +534,41 @@
       padding: 7px 10px;
       color-scheme: dark;
     }
+    .dest-block input[type="text"], .dest-block input[type="password"] {
+      background: var(--bg-elev);
+    }
     textarea {
       min-height: 96px;
       font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px;
       resize: vertical;
     }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; }
-    .row > div { flex: 1; min-width: 140px; }
     .check {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 13px;
     }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .check input[type="checkbox"] { accent-color: var(--mint); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .dirty-flag { color: var(--amber); font-size: 12px; }
     .msg { min-height: 1.2em; margin-top: 8px; color: var(--muted); font-size: 12px; }
-    .card-cfg .msg:empty { display: none; }
-    .msg.err { color: var(--rose); }
-    .msg.ok { color: var(--mint); }
+    .card-cfg .msg:empty, .kpi .msg:empty { display: none; }
+    .kpi .msg { margin-top: 4px; min-height: 0; }
+    .msg.is-err { color: var(--rose); }
+    .msg.is-ok { color: var(--mint); }
     .err { color: var(--rose); font-size: 13px; margin-bottom: 12px; }
+    .err .btn { margin-left: 8px; }
+    .foot {
+      color: var(--muted);
+      font-size: 11px;
+      padding: 8px 2px 40px;
+      overflow-wrap: anywhere;
+    }
+    .foot code {
+      font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
+      font-size: 10px;
+    }
     dialog {
       border: 0;
       padding: 0;
@@ -473,6 +605,7 @@
       color: var(--muted);
       font-size: 12px;
       cursor: pointer;
+      position: relative;
       transition: background 40ms ease-out, border-color 40ms ease-out, color 40ms ease-out;
     }
     .drop:hover {
@@ -485,7 +618,17 @@
       color: var(--mint);
     }
     .drop.over { border-color: var(--mint); color: var(--mint); }
-    .drop input { display: none; }
+    .drop:focus-within {
+      outline: 2px solid var(--mint);
+      outline-offset: 2px;
+    }
+    .drop input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
     .dlg-actions {
       display: flex;
       gap: 8px;
@@ -497,32 +640,58 @@
     @media (max-width: 640px) {
       .top { flex-direction: column; align-items: flex-start; }
       .kpi-sync { flex: 1 1 100%; }
-      .fields, .fields.even, .fields.triple { grid-template-columns: 1fr; }
+      .sync-line { flex-wrap: wrap; }
+      .sync-line .itv-wrap { margin-left: 56px; }
+      .sync-errline { padding-left: 0; }
+      .fields, .fields.even { grid-template-columns: 1fr; }
       .dest-row { flex-wrap: wrap; }
       .dest-row .dest-url, .dest-row .dest-token { flex: 1 1 100%; }
     }
   </style>
 </head>
 <body>
-  <div class="app">
+  <main class="app">
     <header class="top">
       <div class="brand">
         <h1>AI <span>Usage</span></h1>
         <p>采集端 · 凭证只留本机 · <code id="kpi-panel">—</code></p>
       </div>
       <nav class="nav">
-        <span class="msg" id="sync-msg"></span>
+        <span class="msg" id="sync-msg" aria-live="polite"></span>
         <button type="button" class="btn primary" id="sync-now">立即同步</button>
       </nav>
     </header>
-    <p class="err" id="page-err" hidden></p>
+    <p class="err" id="page-err" hidden>
+      <span id="page-err-text"></span>
+      <button type="button" class="btn ghost mini" id="page-retry">重试</button>
+    </p>
     <section class="kpis-row">
       <div class="kpi kpi-sync">
-        <div class="label">上次同步</div>
-        <div class="sync-lines" id="kpi-sync">
-          <div class="sync-line idle"><span class="k">agent</span><span class="t">尚未同步</span></div>
-          <div class="sync-line idle"><span class="k">cursor</span><span class="t">尚未同步</span></div>
+        <div class="label">上次同步 <span class="syncing" id="syncing-flag" hidden>· 同步中…</span></div>
+        <div class="sync-lines">
+          <div class="sync-line idle" id="line-agent">
+            <span class="k">agent</span>
+            <span class="t" id="t-agent">尚未同步</span>
+            <span class="next" id="next-agent"></span>
+            <span class="itv-wrap"><label for="interval_local">周期</label>
+              <input id="interval_local" class="itv" type="text" placeholder="5m" autocomplete="off" /></span>
+          </div>
+          <div class="sync-errline" id="err-agent" hidden></div>
+          <div class="sync-line idle" id="line-cursor">
+            <span class="k">cursor</span>
+            <span class="t" id="t-cursor">尚未同步</span>
+            <span class="next" id="next-cursor"></span>
+            <span class="itv-wrap"><label for="interval_cursor">周期</label>
+              <input id="interval_cursor" class="itv" type="text" placeholder="30m" autocomplete="off" /></span>
+          </div>
+          <div class="sync-errline" id="err-cursor" hidden></div>
         </div>
+        <div class="itv-hint">周期按钟面对齐（5m → :00/:05，30m → :00/:30），格式 30s / 5m / 2h，回车或移开焦点即保存</div>
+        <div class="msg" id="sync-card-msg" aria-live="polite"></div>
+        <details class="report" id="report-box" hidden>
+          <summary>最近一轮解析详情</summary>
+          <div id="report-body"></div>
+        </details>
       </div>
       <div class="kpi kpi-tools">
         <div class="label">本机工具</div>
@@ -540,42 +709,48 @@
         </button>
       </div>
       <div class="acct-grid" id="accounts"></div>
-      <div class="msg" id="acct-msg"></div>
+      <div class="msg" id="acct-msg" aria-live="polite"></div>
     </section>
 
     <section class="card card-cfg">
       <div class="card-head">
-        <h2>上报</h2>
+        <h2>采集端配置</h2>
         <button type="button" class="plus" id="add-dest" title="添加看板地址" aria-label="添加看板地址">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M12 5v14"/><path d="M5 12h14"/>
           </svg>
         </button>
       </div>
-      <div class="fields triple">
+      <div class="fields even">
         <label class="field" for="hostname">主机显示名
           <input id="hostname" type="text" autocomplete="off" />
         </label>
-        <label class="field" for="interval_local">本地工具间隔
-          <input id="interval_local" type="text" placeholder="5m" title="按钟面对齐，5m 在 :00/:05/:10 上报" />
-        </label>
-        <label class="field" for="interval_cursor">Cursor 间隔
-          <input id="interval_cursor" type="text" placeholder="30m" title="按钟面对齐，30m 在 :00/:30 上报" />
+        <label class="field" for="bind">面板监听地址
+          <input id="bind" type="text" placeholder="127.0.0.1:3848" autocomplete="off" />
+          <span class="field-hint">仅允许回环地址；改动保存后需重启 daemon 生效</span>
         </label>
       </div>
       <div class="dest-label">看板地址</div>
+      <div class="msg is-err" id="setup-hint" hidden>尚未配置看板地址：填入看板 URL 与 ingest token 并保存，即开始上报。token 由看板端 `ai-usage-dash token create` 或设置页签发。</div>
       <div class="dest-list" id="dests"></div>
       <div class="cfg-foot">
-        <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
+        <div class="check-wrap">
+          <label class="check"><input id="upload_project" type="checkbox" /> 上报项目路径</label>
+          <span class="field-hint">关闭后 project 一律以 unknown 上报，看板无法按项目区分</span>
+        </div>
         <div class="actions">
+          <span class="dirty-flag" id="dirty-flag" hidden>有未保存更改</span>
+          <button type="button" class="btn ghost" id="revert-cfg" hidden>撤销</button>
+          <button type="button" class="btn ghost" id="full-sync" title="重新上传全部数据到所有看板地址（幂等，用于 state 漂移或换库后重建）">全量同步</button>
           <button type="button" class="btn primary" id="save-cfg">保存配置</button>
         </div>
       </div>
-      <div class="msg" id="cfg-msg"></div>
+      <div class="msg" id="cfg-msg" aria-live="polite"></div>
     </section>
-  </div>
+    <footer class="foot" id="foot"></footer>
+  </main>
 
-  <dialog id="json-dlg" class="wide">
+  <dialog id="json-dlg" class="wide" aria-labelledby="json-title">
     <div class="dlg-card">
       <div class="json-head">
         <div>
@@ -588,10 +763,10 @@
     </div>
   </dialog>
 
-  <dialog id="add-dlg">
+  <dialog id="add-dlg" aria-labelledby="add-title">
     <form class="dlg-card" id="add-form">
-      <h3>添加 Cursor 账号</h3>
-      <p class="dlg-lead">粘贴 JWT / WorkosCursorSessionToken，或上传账号导出 JSON（提取 access_token）。</p>
+      <h3 id="add-title">添加 Cursor 账号</h3>
+      <p class="dlg-lead">两种凭证均可：原生 access token（IDE 登录，`state.vscdb` 的 cursorAuth/accessToken，Bot 用量可查）或 WorkosCursorSessionToken（网站 cookie，web 型，Bot 不可用）；也可上传账号导出 JSON（提取 access_token）。新账号默认从加入时刻起报，可在卡片上改统计起始。</p>
       <label class="field" for="token">粘贴凭证</label>
       <textarea id="token" placeholder="eyJ… 或 sub::eyJ… 或 JSON 数组"></textarea>
       <label class="drop" id="drop">
@@ -604,7 +779,36 @@
         <button type="button" class="btn ghost" id="add-cancel">取消</button>
         <button type="submit" class="btn primary" id="add-submit">添加</button>
       </div>
-      <div class="msg" id="dlg-msg"></div>
+      <div class="msg" id="dlg-msg" aria-live="polite"></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dlg" aria-labelledby="confirm-title">
+    <div class="dlg-card">
+      <h3 id="confirm-title">确认操作</h3>
+      <p class="dlg-lead" id="confirm-text"></p>
+      <div class="dlg-actions">
+        <span class="grow"></span>
+        <button type="button" class="btn ghost" id="confirm-cancel">取消</button>
+        <button type="button" class="btn danger" id="confirm-ok">删除</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="since-dlg" aria-labelledby="since-title">
+    <form class="dlg-card" id="since-form">
+      <h3 id="since-title">统计起始时间</h3>
+      <p class="dlg-lead">云端 CSV 是全量历史；只上报该日期（UTC 0 点）及之后的用量。已上报到看板的历史不会自动删除。</p>
+      <label class="field" for="since-date">起始日期
+        <input id="since-date" type="date" />
+      </label>
+      <div class="dlg-actions">
+        <button type="button" class="btn ghost" id="since-all">改为全部历史</button>
+        <span class="grow"></span>
+        <button type="button" class="btn ghost" id="since-cancel">取消</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+      <div class="msg" id="since-msg" aria-live="polite"></div>
     </form>
   </dialog>
 
@@ -616,12 +820,15 @@
     let jsonHash = null;
     let cfgDirty = false;
     let destsDirty = false;
+    let syncNowBusy = false;
     const usageFp = new Map();
     const usagePulseUntil = new Map();
     const usageForcePulse = new Set();
     const planPaused = new Set();
     const planSpinning = new Set();
     const planInflight = new Map();
+    const cardCache = new Map();
+    const msgTimers = new Map();
     const PLAN_MS = 60000;
     const STATUS_MS = 8000;
     let statusTimer = null;
@@ -667,7 +874,7 @@
     function meter(label, pct) {
       if (pct == null) return null;
       const box = el("div", "meter");
-      const row = el("div", "row");
+      const row = el("div", "meter-row");
       row.appendChild(el("span", "", label));
       row.appendChild(el("b", "", fmtPct(pct)));
       box.appendChild(row);
@@ -679,9 +886,17 @@
       return box;
     }
     function setMsg(id, text, kind) {
-      const el = $(id);
-      el.textContent = text || "";
-      el.className = "msg" + (kind ? " " + kind : "");
+      const n = $(id);
+      n.textContent = text || "";
+      n.className = "msg" + (kind === "err" ? " is-err" : kind === "ok" ? " is-ok" : "");
+      if (msgTimers.has(id)) { clearTimeout(msgTimers.get(id)); msgTimers.delete(id); }
+      if (text && kind === "ok") {
+        msgTimers.set(id, setTimeout(() => {
+          n.textContent = "";
+          n.className = "msg";
+          msgTimers.delete(id);
+        }, 4000));
+      }
     }
     async function api(path, opts) {
       const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
@@ -733,19 +948,169 @@
       if (sameDay) return hm;
       return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + hm;
     }
-    function syncLine(label, ls) {
-      const line = el("div", "sync-line" + (!ls ? " idle" : ls.error ? " err" : ""));
-      line.appendChild(el("span", "k", label));
-      const t = el("span", "t", ls ? fmtWhen(ls.at) : "尚未同步");
-      if (ls && ls.error) t.title = ls.error;
-      line.appendChild(t);
-      return line;
+    function fmtTick(iso) {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      return pad(d.getHours()) + ":" + pad(d.getMinutes());
     }
+    function confirmDlg(text, okLabel) {
+      return new Promise((resolve) => {
+        confirmResolve = resolve;
+        $("confirm-text").textContent = text;
+        $("confirm-ok").textContent = okLabel || "删除";
+        $("confirm-dlg").showModal();
+      });
+    }
+    let confirmResolve = null;
+    $("confirm-ok").onclick = () => {
+      const r = confirmResolve;
+      confirmResolve = null;
+      $("confirm-dlg").close();
+      if (r) r(true);
+    };
+    $("confirm-cancel").onclick = () => $("confirm-dlg").close();
+    $("confirm-dlg").addEventListener("close", () => {
+      if (confirmResolve) { confirmResolve(false); confirmResolve = null; }
+    });
+
+    function markDirty() {
+      cfgDirty = true;
+      updateDirtyUi();
+    }
+    function markDestsDirty() {
+      destsDirty = true;
+      updateDirtyUi();
+    }
+    function clearDirty() {
+      cfgDirty = false;
+      destsDirty = false;
+      updateDirtyUi();
+    }
+    function updateDirtyUi() {
+      const dirty = cfgDirty || destsDirty;
+      $("dirty-flag").hidden = !dirty;
+      $("revert-cfg").hidden = !dirty;
+    }
+    window.addEventListener("beforeunload", (e) => {
+      if (cfgDirty || destsDirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+    $("revert-cfg").onclick = () => {
+      clearDirty();
+      if (lastStatus) render(lastStatus);
+      setMsg("cfg-msg", "已恢复为当前生效配置", "ok");
+    };
+
+    function renderTier(which, ls, nextIso) {
+      const line = $("line-" + which);
+      const t = $("t-" + which);
+      const next = $("next-" + which);
+      const err = $("err-" + which);
+      if (ls && ls.note) {
+        t.textContent = ls.note;
+      } else {
+        t.textContent = ls ? fmtWhen(ls.at) : "尚未同步";
+      }
+      line.classList.toggle("idle", !ls || !!(ls && ls.note));
+      line.classList.toggle("has-err", !!(ls && ls.error));
+      next.textContent = nextIso ? "下次 " + fmtTick(nextIso) : "";
+      if (ls && ls.error) {
+        err.hidden = false;
+        err.textContent = ls.error;
+        err.title = ls.error;
+      } else {
+        err.hidden = true;
+        err.textContent = "";
+        err.removeAttribute("title");
+      }
+    }
+    function renderReport(s) {
+      const box = $("report-box");
+      const body = $("report-body");
+      const rep = s.last_report;
+      if (!rep || !rep.sources || !rep.sources.length) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      body.replaceChildren();
+      rep.sources.forEach((src) => {
+        const line = el("div", "report-line");
+        line.appendChild(el("span", "report-src", src.source));
+        if (src.skipped) {
+          line.appendChild(el("span", "chip warn", "跳过"));
+        } else {
+          line.appendChild(el("span", "meta", src.buckets + " buckets · " + src.sessions + " sessions"));
+        }
+        body.appendChild(line);
+        (src.warnings || []).forEach((w) => body.appendChild(el("div", "report-warn", w)));
+      });
+    }
+    function setIfIdle(id, val) {
+      const n = $(id);
+      if (document.activeElement === n) return;
+      n.value = val || "";
+    }
+    function intervalValid(v) {
+      return /^\d+(s|m|h)?$/.test(v);
+    }
+    async function saveInterval(key, input) {
+      const s = lastStatus;
+      if (!s) return;
+      const v = input.value.trim();
+      const prev = s[key] || "";
+      if (!v || v === prev) {
+        input.value = prev;
+        return;
+      }
+      if (!intervalValid(v)) {
+        setMsg("sync-card-msg", "周期格式应为 30s / 5m / 2h", "err");
+        input.value = prev;
+        return;
+      }
+      try {
+        await api("/v1/config", {
+          method: "PUT",
+          body: JSON.stringify({
+            destinations: (s.destinations || []).map((d) => ({ url: d.url, token: "" })),
+            hostname: s.hostname || "",
+            upload_project: !!s.upload_project,
+            interval_local: key === "interval_local" ? v : (s.interval_local || ""),
+            interval_cursor: key === "interval_cursor" ? v : (s.interval_cursor || ""),
+          }),
+        });
+        setMsg("sync-card-msg", "同步周期已保存", "ok");
+        await refresh();
+      } catch (e) {
+        setMsg("sync-card-msg", e.message, "err");
+        input.value = prev;
+      }
+    }
+    ["interval_local", "interval_cursor"].forEach((id) => {
+      const input = $(id);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+        if (e.key === "Escape") {
+          input.value = (lastStatus && lastStatus[id]) || "";
+          input.blur();
+        }
+      });
+      input.addEventListener("blur", () => { void saveInterval(id, input); });
+    });
+
     function toolMark(t) {
       const label = TOOL_MARKS[t.id] || t.id;
       const wrap = el("div", "tool" + (t.found ? " on" : ""));
-      wrap.dataset.tip = label + (t.found ? "" : " · 未发现");
-      wrap.setAttribute("aria-label", wrap.dataset.tip);
+      const tip = t.found
+        ? label + ((t.paths && t.paths.length) ? "\n" + t.paths.join("\n") : "")
+        : label + " · 未发现";
+      wrap.dataset.tip = tip;
+      wrap.setAttribute("aria-label", tip);
+      wrap.setAttribute("role", "img");
+      wrap.tabIndex = 0;
       const img = document.createElement("img");
       img.src = "/icons/" + encodeURIComponent(t.id) + ".svg";
       img.alt = "";
@@ -774,7 +1139,9 @@
       card.dataset.hash = a.account_hash;
       const top = el("div", "acct-top");
       const head = el("div", "acct-head");
-      head.appendChild(el("div", "acct-email", a.account_label || a.account_hash));
+      const email = el("div", "acct-email", a.account_label || a.account_hash);
+      email.title = a.account_label || a.account_hash;
+      head.appendChild(email);
       const tools = el("div", "acct-tools");
       const refreshBtn = iconBtn("refresh", a.usage_error ? "拉取失败，点击重试" : "刷新套餐用量");
       refreshBtn.setAttribute("data-plan-refresh", "");
@@ -806,47 +1173,94 @@
         chips.appendChild(el("span", "chip" + (st === "active" ? " on" : ""), st));
       }
       if (a.from_ide) chips.appendChild(el("span", "chip warn", "本机 IDE"));
-      if (a.stored) chips.appendChild(el("span", "chip", "已导入"));
+      if (a.token_type === "web") {
+        const c = el("span", "chip", "web 凭证");
+        c.title = "网站登录产生的 JWT：可采集用量与 API/Auto 套餐，Bot 用量需原生 token";
+        chips.appendChild(c);
+      } else if (a.token_type) {
+        const c = el("span", "chip", "原生凭证");
+        c.title = "IDE 原生 access token：用量、套餐与 Bot 全部可用";
+        chips.appendChild(c);
+      }
+      if (a.stored) chips.appendChild(el("span", "chip on", "已加入采集"));
+      else chips.appendChild(el("span", "chip", "未加入采集"));
+      if (a.ide_token_differs) {
+        const c = el("span", "chip warn", "IDE 已换发新凭证");
+        c.title = "IDE 当前登录的 token 与已加入的不同；采集仍用加入时那份，点「更新凭证」可替换";
+        chips.appendChild(c);
+      }
       if (a.usage_error) chips.appendChild(el("span", "chip bad", "异常"));
       top.appendChild(chips);
       card.appendChild(top);
 
       const apiMeter = meter("API", a.api_percent);
       const autoMeter = meter("Auto", a.auto_percent);
-      if (apiMeter || autoMeter || a.billing_cycle_end || a.bonus_cents || a.plan_used != null) {
+      const botMeter = a.token_type === "web" ? null : meter("Bot", a.bot_percent);
+      if (apiMeter || autoMeter || botMeter || a.billing_cycle_end || a.bonus_cents || a.plan_used != null) {
         const box = el("div", "usage");
         if (apiMeter) box.appendChild(apiMeter);
         if (autoMeter) box.appendChild(autoMeter);
+        if (botMeter) box.appendChild(botMeter);
+        if (a.token_type === "web" && (apiMeter || autoMeter)) {
+          const note = el("div", "meta", "Bot 不可用（web 凭证，需 IDE 原生 token）");
+          note.title = "原生 RPC 只认 IDE 原生 access token；用「导入当前 IDE 登录」或粘贴原生 token 可获得 Bot 用量";
+          box.appendChild(note);
+        }
         const bits = [];
         if (a.plan_used != null) bits.push("已用 " + fmtUsd(a.plan_used));
         if (a.bonus_cents) bits.push("赠额 " + fmtUsd(a.bonus_cents));
         if (a.billing_cycle_end) bits.push("账期至 " + String(a.billing_cycle_end).slice(0, 10));
+        if (a.bot_next_reset) bits.push("Bot 重置 " + String(a.bot_next_reset).slice(0, 10));
         if (bits.length) box.appendChild(el("div", "meta", bits.join(" · ")));
         card.appendChild(box);
       }
       if (a.usage_error) {
         planPaused.add(a.account_hash);
-        const err = el("div", "acct-err", a.usage_error + " · 自动刷新已暂停，点同步重试");
+        const err = el("div", "acct-err", a.usage_error + " · 套餐自动刷新已暂停，点卡片上的刷新图标重试");
         err.setAttribute("role", "alert");
         card.appendChild(err);
       }
 
       const foot = el("div", "acct-foot");
+      const metaCol = el("div", "meta-col");
       const exp = fmtExp(a.exp);
       const expEl = el("div", "meta", exp.text);
       if (exp.kind === "bad") expEl.style.color = "var(--rose)";
       if (exp.kind === "warn") expEl.style.color = "var(--amber)";
-      foot.appendChild(expEl);
+      metaCol.appendChild(expEl);
+      if (a.stored) {
+        const sinceText = a.report_since
+          ? "统计起始 " + String(a.report_since).slice(0, 10)
+          : "统计全部历史";
+        const sinceEl = el("button", "since-link", sinceText);
+        sinceEl.type = "button";
+        sinceEl.title = "云端 CSV 是全量历史；点击修改只上报某日期之后的用量";
+        sinceEl.onclick = () => openSinceDlg(a);
+        metaCol.appendChild(sinceEl);
+      }
+      foot.appendChild(metaCol);
       const actions = el("div", "chips");
       if (a.from_ide && !a.stored) {
         const add = el("button", "btn primary", "加入采集");
+        add.type = "button";
         add.onclick = () => importIde();
         actions.appendChild(add);
       }
+      if (a.stored && a.ide_token_differs) {
+        const upd = el("button", "btn ghost mini", "更新凭证");
+        upd.type = "button";
+        upd.title = "用 IDE 当前登录的 token 替换已加入的存量凭证";
+        upd.onclick = () => importIde();
+        actions.appendChild(upd);
+      }
       if (a.stored) {
         const del = el("button", "btn danger", "删除");
+        del.type = "button";
         del.onclick = async () => {
-          if (!confirm("从本机采集列表删除该账号？")) return;
+          const yes = await confirmDlg(
+            "从本机采集列表删除账号 " + (a.account_label || a.account_hash) + "？已上报到看板的历史不受影响。"
+          );
+          if (!yes) return;
           try {
             await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
             if (jsonHash === a.account_hash) closeJson();
@@ -863,7 +1277,35 @@
     function normUrl(u) {
       return String(u || "").trim().replace(/\/+$/, "");
     }
+    function destStatusLine(d) {
+      const line = el("div", "dest-status");
+      if (d.auth_blocked) line.appendChild(el("span", "chip bad", "鉴权失败 · 已暂停调度"));
+      const last = d.last;
+      if (last) {
+        const okChip = el("span", "chip" + (last.ok ? " on" : " bad"), (last.ok ? "✓ " : "✕ ") + fmtWhen(last.at));
+        line.appendChild(okChip);
+        if (last.ok) {
+          const bits = [last.ingested + " buckets · " + last.sessions + " sessions"];
+          if (last.protected) bits.push("保留 " + last.protected);
+          if (last.full) bits.push("全量");
+          line.appendChild(el("span", "meta", bits.join(" · ")));
+        } else if (last.error) {
+          const e = el("span", "dest-err", last.error);
+          e.title = last.error;
+          line.appendChild(e);
+        }
+      } else {
+        line.appendChild(el("span", "meta", "尚未上报"));
+      }
+      if (d.state_buckets != null) {
+        const st = el("span", "meta", "state " + d.state_buckets + " / " + d.state_sessions);
+        st.title = "本地增量 state 记录的 bucket / session 条数";
+        line.appendChild(st);
+      }
+      return line;
+    }
     function destRow(d) {
+      const block = el("div", "dest-block");
       const row = el("div", "dest-row");
       const urlIn = document.createElement("input");
       urlIn.type = "text";
@@ -871,32 +1313,45 @@
       urlIn.value = d.url || "";
       urlIn.placeholder = "http://127.0.0.1:3847";
       urlIn.autocomplete = "off";
-      urlIn.oninput = () => { destsDirty = true; };
+      urlIn.oninput = () => markDestsDirty();
       const tokIn = document.createElement("input");
       tokIn.type = "password";
       tokIn.className = "dest-token";
-      tokIn.placeholder = d.token_prefix ? (d.token_prefix + " 留空则保持") : "ingest token";
+      tokIn.placeholder = d.token_prefix ? (d.token_prefix + " 留空则保持") : "ingest token（新地址必填）";
       tokIn.autocomplete = "off";
-      tokIn.oninput = () => { destsDirty = true; };
+      tokIn.oninput = () => markDestsDirty();
       const sync = iconBtn("refresh", "增量同步到此地址");
-      sync.onclick = () => syncOne(urlIn.value.trim(), sync);
+      sync.onclick = () => syncOne(urlIn.value.trim(), sync, false);
+      const full = el("button", "btn ghost mini", "全量");
+      full.type = "button";
+      full.title = "全量重传到此地址（重新上传全部数据，幂等）";
+      full.onclick = () => syncOne(urlIn.value.trim(), full, true);
       const del = iconBtn("x", "删除此地址");
-      del.onclick = () => {
-        destsDirty = true;
-        row.remove();
+      del.onclick = async () => {
+        const url = urlIn.value.trim();
+        if (url) {
+          const yes = await confirmDlg("移除看板地址 " + url + "？保存配置后生效，已上报数据不受影响。", "移除");
+          if (!yes) return;
+        }
+        markDestsDirty();
+        block.remove();
         refreshDestRemoveButtons();
       };
       row.appendChild(urlIn);
       row.appendChild(tokIn);
       row.appendChild(sync);
+      row.appendChild(full);
       row.appendChild(del);
-      return row;
+      block.appendChild(row);
+      if (d.url) block.appendChild(destStatusLine(d));
+      return block;
     }
     function refreshDestRemoveButtons() {
-      const rows = $("dests").querySelectorAll(".dest-row");
-      rows.forEach((row) => {
-        const btns = row.querySelectorAll(".icon-btn");
-        if (btns[1]) btns[1].disabled = rows.length <= 1;
+      const blocks = $("dests").querySelectorAll(".dest-block");
+      blocks.forEach((b) => {
+        const btns = b.querySelectorAll(".icon-btn");
+        const delBtn = btns[btns.length - 1];
+        if (delBtn) delBtn.disabled = blocks.length <= 1;
       });
     }
     function paintDests(s) {
@@ -910,12 +1365,12 @@
       refreshDestRemoveButtons();
     }
     function collectDests() {
-      return [...$("dests").querySelectorAll(".dest-row")].map((row) => ({
-        url: row.querySelector(".dest-url").value.trim(),
-        token: row.querySelector(".dest-token").value.trim(),
+      return [...$("dests").querySelectorAll(".dest-block")].map((b) => ({
+        url: b.querySelector(".dest-url").value.trim(),
+        token: b.querySelector(".dest-token").value.trim(),
       })).filter((d) => d.url);
     }
-    async function syncOne(url, btn) {
+    async function syncOne(url, btn, full) {
       url = normUrl(url);
       if (!url) {
         setMsg("cfg-msg", "请先填写看板地址", "err");
@@ -929,8 +1384,8 @@
       btn.disabled = true;
       btn.classList.add("spin");
       try {
-        await api("/v1/sync", { method: "POST", body: JSON.stringify({ url }) });
-        setMsg("cfg-msg", "已请求增量同步", "ok");
+        await api("/v1/sync", { method: "POST", body: JSON.stringify({ url, full: !!full }) });
+        setMsg("cfg-msg", full ? "已请求全量同步" : "已请求增量同步", "ok");
         setTimeout(refresh, 800);
       } catch (e) {
         setMsg("cfg-msg", e.message, "err");
@@ -941,25 +1396,40 @@
     }
     function render(s) {
       if (!cfgDirty) {
-        $("hostname").value = s.hostname || "";
-        $("interval_local").value = s.interval_local || "";
-        $("interval_cursor").value = s.interval_cursor || "";
+        setIfIdle("hostname", s.hostname);
+        setIfIdle("bind", s.bind);
         $("upload_project").checked = !!s.upload_project;
       }
+      setIfIdle("interval_local", s.interval_local);
+      setIfIdle("interval_cursor", s.interval_cursor);
       paintDests(s);
+      $("setup-hint").hidden = !!(s.destinations && s.destinations.length);
       $("kpi-panel").textContent = s.panel || s.bind || "—";
+      $("syncing-flag").hidden = !s.syncing;
+      if (!syncNowBusy) {
+        $("sync-now").disabled = !!s.syncing;
+        $("sync-now").textContent = s.syncing ? "同步中…" : "立即同步";
+      }
+      renderTier("agent", s.last_sync_agent, s.next_tick_local);
+      renderTier("cursor", s.last_sync_cursor, s.next_tick_cursor);
+      renderReport(s);
       const tools = $("tools");
       tools.innerHTML = "";
       (s.tools || []).forEach((t) => tools.appendChild(toolMark(t)));
-      const sync = $("kpi-sync");
-      sync.innerHTML = "";
-      sync.appendChild(syncLine("agent", s.last_sync_agent));
-      sync.appendChild(syncLine("cursor", s.last_sync_cursor));
+      const foot = $("foot");
+      foot.replaceChildren();
+      foot.appendChild(document.createTextNode("ai-usage-agent v" + (s.version || "?") + " · 配置 "));
+      const cfgCode = el("code", "", s.config_path || "—");
+      foot.appendChild(cfgCode);
+      foot.appendChild(document.createTextNode(" · 数据 "));
+      foot.appendChild(el("code", "", s.data_dir || "—"));
       paintAccounts(s);
+    }
+    function accountFp(a) {
+      return JSON.stringify(a);
     }
     function paintAccounts(s) {
       const grid = $("accounts");
-      grid.innerHTML = "";
       const list = s.cursor_accounts || [];
       const live = new Set(list.map((a) => a.account_hash));
       for (const hash of [...usageFp.keys()]) {
@@ -969,18 +1439,33 @@
           usageForcePulse.delete(hash);
           planPaused.delete(hash);
           planSpinning.delete(hash);
+          cardCache.delete(hash);
         }
       }
       for (const hash of [...planPaused]) {
         if (!live.has(hash)) planPaused.delete(hash);
       }
+      for (const hash of [...cardCache.keys()]) {
+        if (!live.has(hash)) cardCache.delete(hash);
+      }
       if (!list.length) {
-        grid.appendChild(el("div", "empty", "尚未挂 Cursor 账号。点右上角 + 粘贴凭证或上传 JSON。"));
-      } else {
-        list.forEach((a) => {
-          const pulse = markUsagePulse(a.account_hash, usageFingerprint(a));
-          grid.appendChild(renderAccount(a, pulse));
-        });
+        cardCache.clear();
+        grid.replaceChildren(el("div", "empty", "尚未挂 Cursor 账号。点右上角 + 粘贴凭证或上传 JSON。"));
+        return;
+      }
+      // 按 account_hash 原地复用卡片：数据未变则保留 DOM，避免 8s 轮询整体重绘
+      const nodes = list.map((a) => {
+        const pulse = markUsagePulse(a.account_hash, usageFingerprint(a));
+        const fp = accountFp(a);
+        const cached = cardCache.get(a.account_hash);
+        if (cached && cached.fp === fp && !pulse) return cached.node;
+        const node = renderAccount(a, pulse);
+        cardCache.set(a.account_hash, { fp, node });
+        return node;
+      });
+      const cur = [...grid.children];
+      if (cur.length !== nodes.length || nodes.some((n, i) => n !== cur[i])) {
+        grid.replaceChildren(...nodes);
       }
       if (jsonHash && $("json-dlg").open) {
         const a = list.find((x) => x.account_hash === jsonHash);
@@ -988,9 +1473,18 @@
         else closeJson();
       }
     }
+    function showPageErr(e) {
+      $("page-err").hidden = false;
+      $("page-err-text").textContent = "面板状态拉取失败：" + (e && e.message ? e.message : e);
+    }
+    function hidePageErr() {
+      $("page-err").hidden = true;
+      $("page-err-text").textContent = "";
+    }
     async function refresh() {
       const s = await api("/v1/status");
       lastStatus = s;
+      hidePageErr();
       render(s);
     }
     function applyPlanSpin(hash) {
@@ -1018,6 +1512,7 @@
           usageForcePulse.add(hash);
         } catch (e) {
           planPaused.add(hash);
+          if (!opts.silent) setMsg("acct-msg", "刷新套餐失败：" + e.message, "err");
         } finally {
           planSpinning.delete(hash);
           applyPlanSpin(hash);
@@ -1041,7 +1536,7 @@
     function startVisibleLoops() {
       stopVisibleLoops();
       if (!pageVisible()) return;
-      statusTimer = setInterval(() => refresh().catch(() => {}), STATUS_MS);
+      statusTimer = setInterval(() => refresh().catch(showPageErr), STATUS_MS);
       planTimer = setInterval(() => { void tickPlan(); }, PLAN_MS);
     }
     async function tickPlan() {
@@ -1051,7 +1546,7 @@
       if (!targets.length) return;
       planBusy = true;
       try {
-        await Promise.all(targets.map((a) => refreshAccount(a.account_hash, { deferPaint: true })));
+        await Promise.all(targets.map((a) => refreshAccount(a.account_hash, { deferPaint: true, silent: true })));
         await refresh();
       } finally {
         planBusy = false;
@@ -1059,7 +1554,7 @@
     }
     function onVisibility() {
       if (pageVisible()) {
-        refresh().then(() => tickPlan()).catch(() => {});
+        refresh().then(() => tickPlan()).catch(showPageErr);
         startVisibleLoops();
       } else {
         stopVisibleLoops();
@@ -1081,8 +1576,44 @@
       jsonHash = null;
       if ($("json-dlg").open) $("json-dlg").close();
     }
-    function closeDlg() {
-      $("add-dlg").close();
+    let sinceHash = null;
+    function openSinceDlg(a) {
+      sinceHash = a.account_hash;
+      $("since-date").value = a.report_since ? String(a.report_since).slice(0, 10) : "";
+      setMsg("since-msg", "");
+      $("since-dlg").showModal();
+    }
+    async function saveSince(value) {
+      if (!sinceHash) return;
+      try {
+        await api("/v1/cursor/accounts/" + encodeURIComponent(sinceHash) + "/report-since", {
+          method: "POST",
+          body: JSON.stringify({ report_since: value }),
+        });
+        $("since-dlg").close();
+        setMsg("acct-msg", value ? "统计起始已更新，将按新起始重算增量" : "已改为上报全部历史", "ok");
+        refresh();
+      } catch (e) {
+        setMsg("since-msg", e.message, "err");
+      }
+    }
+    $("since-form").onsubmit = (e) => {
+      e.preventDefault();
+      const v = $("since-date").value;
+      if (!v) {
+        setMsg("since-msg", "选择日期，或点「改为全部历史」", "err");
+        return;
+      }
+      saveSince(v);
+    };
+    $("since-all").onclick = (e) => { e.preventDefault(); saveSince(null); };
+    $("since-cancel").onclick = (e) => { e.preventDefault(); $("since-dlg").close(); };
+    $("since-dlg").addEventListener("click", (e) => {
+      if (e.target === $("since-dlg")) $("since-dlg").close();
+    });
+    $("since-dlg").addEventListener("close", () => { sinceHash = null; });
+
+    function resetAddForm() {
       $("token").value = "";
       $("file").value = "";
       fileText = "";
@@ -1090,8 +1621,11 @@
       $("file-label").textContent = "点击或拖放 JSON 文件到这里";
       setMsg("dlg-msg", "");
     }
+    function closeDlg() {
+      if ($("add-dlg").open) $("add-dlg").close();
+    }
     function openDlg() {
-      setMsg("dlg-msg", "");
+      resetAddForm();
       $("add-dlg").showModal();
       $("token").focus();
     }
@@ -1123,6 +1657,8 @@
     $("add-dlg").addEventListener("click", (e) => {
       if (e.target === $("add-dlg")) closeDlg();
     });
+    // Escape 等任何关闭路径都会触发 close，统一在这里清理表单状态
+    $("add-dlg").addEventListener("close", resetAddForm);
     $("import-ide").onclick = (e) => { e.preventDefault(); importIde(); };
     $("add-form").onsubmit = async (e) => {
       e.preventDefault();
@@ -1168,12 +1704,12 @@
       const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       takeFile(f);
     });
-    ["hostname", "interval_local", "interval_cursor"].forEach((id) => {
-      $(id).addEventListener("input", () => { cfgDirty = true; });
+    ["hostname", "bind"].forEach((id) => {
+      $(id).addEventListener("input", () => markDirty());
     });
-    $("upload_project").addEventListener("change", () => { cfgDirty = true; });
+    $("upload_project").addEventListener("change", () => markDirty());
     $("add-dest").onclick = () => {
-      destsDirty = true;
+      markDestsDirty();
       $("dests").appendChild(destRow({ url: "", token_prefix: "" }));
       refreshDestRemoveButtons();
       const rows = $("dests").querySelectorAll(".dest-url");
@@ -1181,13 +1717,16 @@
       if (last) last.focus();
     };
     $("save-cfg").onclick = async () => {
+      const btn = $("save-cfg");
       try {
         const destinations = collectDests();
         if (!destinations.length) {
           setMsg("cfg-msg", "至少需要一个看板地址", "err");
           return;
         }
-        await api("/v1/config", {
+        btn.disabled = true;
+        btn.textContent = "保存中…";
+        const r = await api("/v1/config", {
           method: "PUT",
           body: JSON.stringify({
             destinations,
@@ -1195,31 +1734,65 @@
             upload_project: $("upload_project").checked,
             interval_local: $("interval_local").value.trim(),
             interval_cursor: $("interval_cursor").value.trim(),
+            bind: $("bind").value.trim(),
           }),
         });
-        cfgDirty = false;
-        destsDirty = false;
-        setMsg("cfg-msg", "已保存，新地址将全量同步", "ok");
+        clearDirty();
+        if (r.restart_required) {
+          setMsg("cfg-msg", "已保存。面板监听地址已修改，重启 daemon 后生效", "ok");
+        } else {
+          setMsg("cfg-msg", "已保存，新地址将全量同步", "ok");
+        }
         refresh();
-      } catch (e) { setMsg("cfg-msg", e.message, "err"); }
+      } catch (e) {
+        setMsg("cfg-msg", e.message, "err");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "保存配置";
+      }
+    };
+    $("full-sync").onclick = async () => {
+      const btn = $("full-sync");
+      btn.disabled = true;
+      try {
+        await api("/v1/sync", { method: "POST", body: JSON.stringify({ full: true }) });
+        setMsg("cfg-msg", "已请求全量同步（全部地址）", "ok");
+        setTimeout(refresh, 800);
+      } catch (e) {
+        setMsg("cfg-msg", e.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
     };
     $("sync-now").onclick = async () => {
-      setMsg("sync-msg", "同步中…");
+      const btn = $("sync-now");
+      syncNowBusy = true;
+      btn.disabled = true;
+      btn.textContent = "请求中…";
       try {
         await api("/v1/sync", { method: "POST", body: "{}" });
         setMsg("sync-msg", "已请求同步", "ok");
         setTimeout(refresh, 800);
-      } catch (e) { setMsg("sync-msg", e.message, "err"); }
+      } catch (e) {
+        setMsg("sync-msg", e.message, "err");
+      } finally {
+        syncNowBusy = false;
+        btn.disabled = false;
+        btn.textContent = "立即同步";
+      }
+    };
+    $("page-retry").onclick = () => {
+      refresh().then(() => {
+        if (pageVisible()) { void tickPlan(); }
+      }).catch(showPageErr);
     };
     refresh().then(() => {
       if (pageVisible()) {
         void tickPlan();
-        startVisibleLoops();
       }
-    }).catch((e) => {
-      $("page-err").hidden = false;
-      $("page-err").textContent = e.message;
-    });
+    }).catch(showPageErr);
+    // 首屏失败也保持轮询，网络恢复后自动回来，不再假死
+    startVisibleLoops();
     document.addEventListener("visibilitychange", onVisibility);
   </script>
 </body>

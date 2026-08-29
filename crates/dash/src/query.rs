@@ -721,6 +721,7 @@ mod tests {
             timezone: None,
             buckets,
             sessions,
+            cursor_accounts: vec![],
         };
         ingest(c, "host1", "a", Some("0.1.0"), None, req).unwrap();
     }

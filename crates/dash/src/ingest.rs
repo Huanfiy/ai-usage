@@ -312,6 +312,7 @@ mod tests {
                 timezone: None,
                 buckets: vec![sample_bucket(100)],
                 sessions: vec![],
+                cursor_accounts: vec![],
             };
             let r1 = ingest(c, "host1", "a", Some("0.1.0"), None, req)?;
             assert_eq!(r1.ingested, 1);
@@ -322,6 +323,7 @@ mod tests {
                 timezone: None,
                 buckets: vec![sample_bucket(40)],
                 sessions: vec![],
+                cursor_accounts: vec![],
             };
             let r2 = ingest(c, "host1", "a", Some("0.1.0"), None, req)?;
             assert_eq!(r2.protected.buckets, 1);
@@ -346,6 +348,7 @@ mod tests {
                 timezone: None,
                 buckets: vec![b],
                 sessions: vec![],
+                cursor_accounts: vec![],
             };
             let r = ingest(c, "host1", "a", None, None, req)?;
             assert_eq!(r.dropped.buckets, 1);
@@ -400,6 +403,7 @@ mod tests {
                 timezone: None,
                 buckets,
                 sessions: vec![],
+                cursor_accounts: vec![],
             },
         )
         .unwrap()

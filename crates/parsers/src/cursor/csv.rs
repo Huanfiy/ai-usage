@@ -14,8 +14,11 @@ const COL_OUTPUT: &str = "Output Tokens";
 #[derive(Debug)]
 pub struct CsvError;
 
-/// Full CSV. Do not time-window-truncate: agent `state.prune` would drop the
-/// omitted buckets and re-upload them as new on the next successful parse.
+/// Full CSV, no rolling time-window truncation here: a moving window would let
+/// buckets drift in and out of the live set, and `state.prune` would re-upload
+/// them as new after each swing. Per-account `report_since` is a FIXED cutoff
+/// applied by the caller — entries before it never enter the live set, so the
+/// prune settles once and stays stable.
 pub fn parse_export_csv(text: &str) -> Result<Vec<UsageEntry>, CsvError> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)

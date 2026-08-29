@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ use ai_usage_parsers::{
 
 use crate::config::{self, AgentConfig, Destination};
 use crate::cursor_accounts::{self, AccountView, CursorAccountsFile};
+use crate::sync::{PushErrorKind, SourceReport, SyncReport};
 
 const HTML: &str = include_str!("panel.html");
 const ICON_FAVICON: &[u8] = include_bytes!("panel-icons/favicon.svg");
@@ -46,6 +47,11 @@ struct Inner {
     last_sync_agent: Option<LastSyncView>,
     last_sync_cursor: Option<LastSyncView>,
     sync_jobs: Vec<SyncJob>,
+    dest_sync: HashMap<String, DestSyncView>,
+    last_report: Option<ReportView>,
+    syncing: bool,
+    /// 401 过的目标 URL：调度轮跳过，配置变更或手动同步时清除。
+    auth_blocked: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +65,9 @@ pub struct LastSyncView {
     pub at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 非错误的状态说明（如 Cursor 未加入采集账号）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl LastSyncView {
@@ -66,6 +75,7 @@ impl LastSyncView {
         Self {
             at: Utc::now().to_rfc3339(),
             error: None,
+            note: None,
         }
     }
 
@@ -73,8 +83,39 @@ impl LastSyncView {
         Self {
             at: Utc::now().to_rfc3339(),
             error: Some(err.to_string()),
+            note: None,
         }
     }
+
+    pub fn with_note(note: &str) -> Self {
+        Self {
+            at: Utc::now().to_rfc3339(),
+            error: None,
+            note: Some(note.to_string()),
+        }
+    }
+}
+
+/// 某看板地址最近一次上报结果。
+#[derive(Debug, Clone, Serialize)]
+pub struct DestSyncView {
+    pub at: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<PushErrorKind>,
+    pub full: bool,
+    pub ingested: u64,
+    pub sessions: u64,
+    pub protected: u64,
+}
+
+/// 最近一轮同步的解析摘要。
+#[derive(Debug, Clone, Serialize)]
+pub struct ReportView {
+    pub at: String,
+    pub sources: Vec<SourceReport>,
 }
 
 impl PanelState {
@@ -87,6 +128,10 @@ impl PanelState {
                 last_sync_agent: None,
                 last_sync_cursor: None,
                 sync_jobs: Vec::new(),
+                dest_sync: HashMap::new(),
+                last_report: None,
+                syncing: false,
+                auth_blocked: HashSet::new(),
             }),
             wake: Condvar::new(),
             usage_cache: Mutex::new(HashMap::new()),
@@ -169,15 +214,78 @@ impl PanelState {
         let _ = self.wake.wait_timeout(g, timeout);
     }
 
-    pub fn record_sync(&self, agent: bool, cursor: bool, view: LastSyncView) {
+    pub fn record_sync(&self, agent: Option<LastSyncView>, cursor: Option<LastSyncView>) {
         let mut g = self.inner.lock().expect("panel state");
-        if agent {
-            g.last_sync_agent = Some(view.clone());
+        if let Some(view) = agent {
+            g.last_sync_agent = Some(view);
         }
-        if cursor {
+        if let Some(view) = cursor {
             g.last_sync_cursor = Some(view);
         }
     }
+
+    pub fn set_syncing(&self, syncing: bool) {
+        self.inner.lock().expect("panel state").syncing = syncing;
+    }
+
+    /// 记录整轮报告：每目标结果、解析摘要，并维护 401 封锁集合。
+    pub fn record_report(&self, report: &SyncReport) {
+        let now = Utc::now().to_rfc3339();
+        let mut g = self.inner.lock().expect("panel state");
+        for d in &report.dests {
+            g.dest_sync.insert(
+                d.url.clone(),
+                DestSyncView {
+                    at: now.clone(),
+                    ok: d.ok,
+                    error: d.error.clone(),
+                    error_kind: d.error_kind,
+                    full: d.full,
+                    ingested: d.ingested,
+                    sessions: d.sessions,
+                    protected: d.protected,
+                },
+            );
+            if d.error_kind == Some(PushErrorKind::Auth) {
+                g.auth_blocked.insert(d.url.clone());
+            } else if d.ok {
+                g.auth_blocked.remove(&d.url);
+            }
+        }
+        g.last_report = Some(ReportView {
+            at: now,
+            sources: report.sources.clone(),
+        });
+    }
+
+    pub fn auth_blocked(&self) -> HashSet<String> {
+        self.inner.lock().expect("panel state").auth_blocked.clone()
+    }
+
+    fn clear_auth_blocked(&self) {
+        self.inner.lock().expect("panel state").auth_blocked.clear();
+    }
+
+    fn status_snapshot(&self) -> StatusSnapshot {
+        let g = self.inner.lock().expect("panel state");
+        StatusSnapshot {
+            last_sync_agent: g.last_sync_agent.clone(),
+            last_sync_cursor: g.last_sync_cursor.clone(),
+            dest_sync: g.dest_sync.clone(),
+            last_report: g.last_report.clone(),
+            syncing: g.syncing,
+            auth_blocked: g.auth_blocked.clone(),
+        }
+    }
+}
+
+struct StatusSnapshot {
+    last_sync_agent: Option<LastSyncView>,
+    last_sync_cursor: Option<LastSyncView>,
+    dest_sync: HashMap<String, DestSyncView>,
+    last_report: Option<ReportView>,
+    syncing: bool,
+    auth_blocked: HashSet<String>,
 }
 
 pub fn serve(listener: TcpListener, state: Arc<PanelState>) -> Result<()> {
@@ -305,7 +413,7 @@ fn dispatch(
         ("GET", "/icons/cursor.svg") => svg_ok(ICON_CURSOR),
         ("GET", "/v1/status") => json_ok(status_payload(state)),
         ("PUT", "/v1/config") => match put_config(state, body) {
-            Ok(()) => json_ok(serde_json::json!({"ok": true})),
+            Ok(v) => json_ok(v),
             Err(err) => json_err(400, &err.to_string()),
         },
         ("POST", "/v1/sync") => match post_sync(state, body) {
@@ -328,6 +436,14 @@ fn dispatch(
                         json_err(502, &msg)
                     }
                 }
+            }
+        }
+        (m, p) if m == "POST" && since_account_hash(p).is_some() => {
+            let hash = since_account_hash(p).expect("matched");
+            match post_report_since(state, &hash, body) {
+                Ok(true) => json_ok(serde_json::json!({"ok": true})),
+                Ok(false) => json_err(404, "账号不存在"),
+                Err(err) => json_err(400, &err.to_string()),
             }
         }
         (m, p) if m == "DELETE" && p.starts_with("/v1/cursor/accounts/") => {
@@ -383,6 +499,9 @@ struct ConfigPatch {
     upload_project: bool,
     interval_local: String,
     interval_cursor: String,
+    /// 面板监听地址；改动写入配置，重启 daemon 后生效。
+    #[serde(default)]
+    bind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -416,7 +535,7 @@ fn merge_destinations(old: &[Destination], incoming: &[DestPatch]) -> Result<Vec
     Ok(out)
 }
 
-fn put_config(state: &PanelState, body: &[u8]) -> Result<()> {
+fn put_config(state: &PanelState, body: &[u8]) -> Result<serde_json::Value> {
     let patch: ConfigPatch = serde_json::from_slice(body).context("JSON")?;
     let mut cfg = state.config();
     let old_dests = cfg.destinations();
@@ -437,20 +556,49 @@ fn put_config(state: &PanelState, body: &[u8]) -> Result<()> {
         .filter(|d| !old_dests.iter().any(|o| o.url == d.url))
         .map(|d| d.url.clone())
         .collect();
+    // 同 URL 换 token：dash 端 host_id 由 token 派生，等于新主机身份；
+    // 增量 hash 对新身份无意义，必须全量重传，否则看板像没数据。
+    let token_changed: Vec<String> = new_dests
+        .iter()
+        .filter(|d| {
+            old_dests
+                .iter()
+                .any(|o| o.url == d.url && o.token != d.token)
+        })
+        .map(|d| d.url.clone())
+        .collect();
     cfg.set_destinations(new_dests);
     cfg.hostname = patch.hostname;
     cfg.upload_project = patch.upload_project;
     cfg.interval_local = patch.interval_local;
     cfg.interval_cursor = patch.interval_cursor;
+    let mut restart_required = false;
+    if let Some(bind) = patch.bind {
+        let bind = bind.trim().to_string();
+        if !bind.is_empty() && bind != cfg.bind {
+            config::require_loopback(&bind)?;
+            cfg.bind = bind;
+            restart_required = true;
+        }
+    }
     cfg.save(&state.config_path)?;
     state.inner.lock().expect("panel state").cfg = cfg;
-    for url in added {
+    // 配置变了（token 可能已换），解除 401 封锁并唤醒调度循环让新配置立即生效。
+    state.clear_auth_blocked();
+    state.wake.notify_all();
+    let mut full_urls: Vec<String> = added;
+    for url in token_changed {
+        if !full_urls.contains(&url) {
+            full_urls.push(url);
+        }
+    }
+    for url in full_urls {
         state.enqueue_sync(SyncJob {
             url: Some(url),
             full: true,
         });
     }
-    Ok(())
+    Ok(serde_json::json!({ "ok": true, "restart_required": restart_required }))
 }
 
 fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
@@ -466,6 +614,16 @@ fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
     if let Some(ref u) = url {
         if state.config().find_dest(u).is_none() {
             anyhow::bail!("未配置看板地址 {u}");
+        }
+    }
+    // 手动同步是明确的重试动作，解除对应目标的 401 封锁。
+    {
+        let mut g = state.inner.lock().expect("panel state");
+        match &url {
+            Some(u) => {
+                g.auth_blocked.remove(u);
+            }
+            None => g.auth_blocked.clear(),
         }
     }
     state.enqueue_sync(SyncJob { url, full: patch.full });
@@ -521,6 +679,11 @@ fn parse_ctx(data_dir: &std::path::Path) -> ParseCtx {
 struct DestView {
     url: String,
     token_prefix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last: Option<DestSyncView>,
+    auth_blocked: bool,
+    state_buckets: usize,
+    state_sessions: usize,
 }
 
 #[derive(Serialize)]
@@ -534,16 +697,35 @@ struct StatusPayload {
     bind: String,
     panel: String,
     token_prefix: String,
+    version: String,
+    config_path: String,
+    data_dir: String,
+    syncing: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_tick_local: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_tick_cursor: Option<String>,
     tools: Vec<ToolView>,
     cursor_accounts: Vec<AccountView>,
     last_sync_agent: Option<LastSyncView>,
     last_sync_cursor: Option<LastSyncView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_report: Option<ReportView>,
 }
 
 #[derive(Serialize)]
 struct ToolView {
     id: String,
     found: bool,
+    paths: Vec<String>,
+}
+
+/// 下一个钟面刻度（刻度是绝对的 Unix 对齐点，与上次同步无关）。
+fn next_tick(interval: &str) -> Option<String> {
+    let period = config::parse_interval(interval).ok()?;
+    let at = crate::daemon::next_aligned(std::time::SystemTime::now(), period);
+    let dt: chrono::DateTime<Utc> = at.into();
+    Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
 fn status_payload(state: &PanelState) -> serde_json::Value {
@@ -551,23 +733,31 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
     let ctx = parse_ctx(&state.data_dir);
     let tools = ai_usage_parsers::default_adapters()
         .into_iter()
-        .map(|a| ToolView {
-            id: a.id().to_string(),
-            found: !a.detect(&ctx).is_empty(),
+        .map(|a| {
+            let paths = a.detect(&ctx);
+            ToolView {
+                id: a.id().to_string(),
+                found: !paths.is_empty(),
+                paths: paths.iter().map(|p| p.display().to_string()).collect(),
+            }
         })
         .collect();
     let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
     let ide = read_ide_cursor_auth(&ctx);
-    let (last_sync_agent, last_sync_cursor) = {
-        let g = state.inner.lock().expect("panel state");
-        (g.last_sync_agent.clone(), g.last_sync_cursor.clone())
-    };
+    let snap = state.status_snapshot();
     let dests = cfg.destinations();
     let dest_views: Vec<DestView> = dests
         .iter()
-        .map(|d| DestView {
-            url: d.url.clone(),
-            token_prefix: format!("{}…", d.token.chars().take(12).collect::<String>()),
+        .map(|d| {
+            let st = crate::state::SyncState::load(&config::dest_state_path(&state.data_dir, &d.url));
+            DestView {
+                url: d.url.clone(),
+                token_prefix: format!("{}…", d.token.chars().take(12).collect::<String>()),
+                last: snap.dest_sync.get(&d.url).cloned(),
+                auth_blocked: snap.auth_blocked.contains(&d.url),
+                state_buckets: st.buckets.len(),
+                state_sessions: st.sessions.len(),
+            }
         })
         .collect();
     let first = dests.first();
@@ -583,14 +773,21 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         token_prefix: first
             .map(|d| format!("{}…", d.token.chars().take(12).collect::<String>()))
             .unwrap_or_default(),
+        version: env!("CARGO_PKG_VERSION").into(),
+        config_path: state.config_path.display().to_string(),
+        data_dir: state.data_dir.display().to_string(),
+        syncing: snap.syncing,
+        next_tick_local: next_tick(&cfg.interval_local),
+        next_tick_cursor: next_tick(&cfg.interval_cursor),
         tools,
         cursor_accounts: {
             let mut views = merge_account_views(&extras, ide.as_ref());
             apply_cached_plan(state, &mut views);
             views
         },
-        last_sync_agent,
-        last_sync_cursor,
+        last_sync_agent: snap.last_sync_agent,
+        last_sync_cursor: snap.last_sync_cursor,
+        last_report: snap.last_report,
     };
     serde_json::to_value(payload).unwrap_or(serde_json::json!({}))
 }
@@ -609,6 +806,12 @@ fn merge_account_views(
             if ide.account_label.contains('@') {
                 existing.account_label = ide.account_label.clone();
             }
+            existing.ide_token_differs = extras
+                .accounts
+                .iter()
+                .find(|a| a.account_hash == ide.account_hash)
+                .map(|a| a.access_token != ide.access_token)
+                .unwrap_or(false);
         } else {
             views.insert(0, AccountView::from_preview(ide, true, false));
         }
@@ -623,6 +826,48 @@ fn refresh_account_hash(path: &str) -> Option<String> {
         return None;
     }
     Some(percent_decode(hash))
+}
+
+fn since_account_hash(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1/cursor/accounts/")?;
+    let hash = rest.strip_suffix("/report-since")?;
+    if hash.is_empty() || hash.contains('/') {
+        return None;
+    }
+    Some(percent_decode(hash))
+}
+
+#[derive(Deserialize)]
+struct SincePatch {
+    #[serde(default)]
+    report_since: Option<String>,
+}
+
+/// 修改统计起始。空/缺省 = 全部历史；接受 YYYY-MM-DD（按 UTC 0 点）或 RFC3339。
+fn post_report_since(state: &PanelState, hash: &str, body: &[u8]) -> Result<bool> {
+    let patch: SincePatch = if body.is_empty() {
+        SincePatch { report_since: None }
+    } else {
+        serde_json::from_slice(body).context("JSON")?
+    };
+    let since = match patch.report_since {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => {
+            let parsed = cursor_accounts::parse_since(&raw)
+                .ok_or_else(|| anyhow::anyhow!("日期格式应为 YYYY-MM-DD 或 RFC3339"))?;
+            Some(parsed.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        }
+    };
+    let found = cursor_accounts::set_report_since(&state.data_dir, hash, since)?;
+    if found {
+        // 起始变化影响计入范围，尽快按新 cutoff 重算增量
+        state.enqueue_sync(SyncJob {
+            url: None,
+            full: false,
+        });
+    }
+    Ok(found)
 }
 
 fn refresh_account_plan(state: &PanelState, hash: &str) -> Result<()> {
@@ -779,6 +1024,47 @@ mod tests {
     }
 
     #[test]
+    fn put_config_token_change_queues_full_sync() {
+        let (_dir, state) = setup();
+        let body = serde_json::json!({
+            "destinations": [
+                { "url": "http://127.0.0.1:3847", "token": "aiu_rotated" }
+            ],
+            "hostname": "testhost",
+            "upload_project": true,
+            "interval_local": "5m",
+            "interval_cursor": "30m"
+        });
+        let (st, _, out) = dispatch(
+            &state,
+            "PUT",
+            "/v1/config",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let jobs = state.take_sync_jobs();
+        assert_eq!(jobs.len(), 1, "换 token = 新 host_id，须全量");
+        assert_eq!(jobs[0].url.as_deref(), Some("http://127.0.0.1:3847"));
+        assert!(jobs[0].full);
+        // token 未变时不触发
+        let body = serde_json::json!({
+            "destinations": [ { "url": "http://127.0.0.1:3847" } ],
+            "hostname": "testhost",
+            "upload_project": true,
+            "interval_local": "5m",
+            "interval_cursor": "30m"
+        });
+        let (st, _, _) = dispatch(
+            &state,
+            "PUT",
+            "/v1/config",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        assert!(state.take_sync_jobs().is_empty());
+    }
+
+    #[test]
     fn put_config_new_dest_requires_token() {
         let (_dir, state) = setup();
         let body = serde_json::json!({
@@ -922,18 +1208,189 @@ mod tests {
     #[test]
     fn record_sync_splits_agent_and_cursor() {
         let (_dir, state) = setup();
-        state.record_sync(true, false, LastSyncView::now_ok());
+        state.record_sync(Some(LastSyncView::now_ok()), None);
         let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(v["last_sync_agent"].is_object());
         assert!(v["last_sync_agent"]["error"].is_null());
         assert!(v["last_sync_cursor"].is_null());
 
-        state.record_sync(false, true, LastSyncView::from_error("cursor down"));
+        state.record_sync(None, Some(LastSyncView::from_error("cursor down")));
         let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(v["last_sync_agent"].is_object());
         assert_eq!(v["last_sync_cursor"]["error"], "cursor down");
+    }
+
+    fn sample_report(ok: bool) -> SyncReport {
+        use crate::sync::DestReport;
+        SyncReport {
+            sources: vec![SourceReport {
+                source: "codex".into(),
+                buckets: 2,
+                sessions: 1,
+                skipped: false,
+                warnings: vec![],
+            }],
+            dests: vec![DestReport {
+                url: "http://127.0.0.1:3847".into(),
+                full: false,
+                ok,
+                error: if ok { None } else { Some("鉴权失败".into()) },
+                error_kind: if ok { None } else { Some(PushErrorKind::Auth) },
+                ingested: 2,
+                sessions: 1,
+                changed_buckets: 2,
+                changed_sessions: 1,
+                protected: 0,
+                dropped: 0,
+            }],
+        }
+    }
+
+    #[test]
+    fn status_exposes_dest_results_and_meta() {
+        let (_dir, state) = setup();
+        state.record_report(&sample_report(true));
+        state.set_syncing(true);
+        let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert!(v["config_path"].as_str().unwrap().ends_with("agent.toml"));
+        assert!(!v["data_dir"].as_str().unwrap().is_empty());
+        assert_eq!(v["syncing"], true);
+        assert!(v["next_tick_local"].is_string());
+        assert!(v["next_tick_cursor"].is_string());
+        let dest = &v["destinations"][0];
+        assert_eq!(dest["last"]["ok"], true);
+        assert_eq!(dest["last"]["ingested"], 2);
+        assert_eq!(dest["auth_blocked"], false);
+        assert!(dest["state_buckets"].is_number());
+        assert_eq!(v["last_report"]["sources"][0]["source"], "codex");
+        let tools = v["tools"].as_array().unwrap();
+        assert!(tools.iter().all(|t| t["paths"].is_array()));
+    }
+
+    #[test]
+    fn auth_failure_blocks_until_config_or_manual_sync() {
+        let (_dir, state) = setup();
+        state.record_report(&sample_report(false));
+        assert!(state.auth_blocked().contains("http://127.0.0.1:3847"));
+        let (_st, _, body) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["destinations"][0]["auth_blocked"], true);
+        assert_eq!(v["destinations"][0]["last"]["error_kind"], "auth");
+
+        // 手动同步解除封锁
+        let (st, _, _) = dispatch(&state, "POST", "/v1/sync", b"{}");
+        assert_eq!(st, 202);
+        assert!(state.auth_blocked().is_empty());
+
+        // 配置保存也解除封锁
+        state.record_report(&sample_report(false));
+        assert!(!state.auth_blocked().is_empty());
+        let body = serde_json::json!({
+            "url": "http://127.0.0.1:3847",
+            "hostname": "testhost",
+            "upload_project": true,
+            "interval_local": "5m",
+            "interval_cursor": "30m"
+        });
+        let (st, _, _) = dispatch(
+            &state,
+            "PUT",
+            "/v1/config",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        assert!(state.auth_blocked().is_empty());
+    }
+
+    #[test]
+    fn put_config_bind_loopback_and_restart_flag() {
+        let (_dir, state) = setup();
+        let mk = |bind: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "url": "http://127.0.0.1:3847",
+                "hostname": "testhost",
+                "upload_project": true,
+                "interval_local": "5m",
+                "interval_cursor": "30m",
+                "bind": bind
+            }))
+            .unwrap()
+        };
+        let (st, _, _) = dispatch(&state, "PUT", "/v1/config", &mk("0.0.0.0:3848"));
+        assert_eq!(st, 400, "非回环 bind 必须拒绝");
+        let (st, _, out) = dispatch(&state, "PUT", "/v1/config", &mk("127.0.0.1:4000"));
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["restart_required"], true);
+        assert_eq!(state.config().bind, "127.0.0.1:4000");
+        // 不带变化的 bind 不要求重启
+        let (st, _, out) = dispatch(&state, "PUT", "/v1/config", &mk("127.0.0.1:4000"));
+        assert_eq!(st, 200);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["restart_required"], false);
+    }
+
+    #[test]
+    fn report_since_endpoint_updates_and_queues_sync() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        // 本机可能存在真实 IDE 登录被扫描进列表，按邮箱定位测试账号
+        let find = |v: &serde_json::Value| -> serde_json::Value {
+            v["cursor_accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["account_label"] == "t@e.com")
+                .cloned()
+                .expect("test account present")
+        };
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let acct = find(&v);
+        let hash = acct["account_hash"].as_str().unwrap().to_string();
+        assert!(acct["added_at"].is_string(), "新账号记录加入时间");
+        assert!(acct["report_since"].is_string(), "默认从加入起报");
+
+        let path = format!("/v1/cursor/accounts/{hash}/report-since");
+        let body = serde_json::json!({ "report_since": "2026-01-01" });
+        let (st, _, out) = dispatch(&state, "POST", &path, &serde_json::to_vec(&body).unwrap());
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let jobs = state.take_sync_jobs();
+        assert_eq!(jobs.len(), 1, "起始变化应触发一次增量同步");
+        assert!(!jobs[0].full);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        assert_eq!(find(&v)["report_since"], "2026-01-01T00:00:00Z");
+
+        // 清空 = 全部历史
+        let (st, _, _) = dispatch(&state, "POST", &path, br#"{"report_since":null}"#);
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let v: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        assert!(find(&v).get("report_since").is_none());
+
+        // 非法日期 400；未知账号 404
+        let (st, _, _) = dispatch(&state, "POST", &path, br#"{"report_since":"nope"}"#);
+        assert_eq!(st, 400);
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts/unknown/report-since",
+            br#"{}"#,
+        );
+        assert_eq!(st, 404);
     }
 
     #[test]

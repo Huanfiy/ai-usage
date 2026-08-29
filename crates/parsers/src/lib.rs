@@ -16,7 +16,7 @@ pub use codex::CodexAdapter;
 pub use cursor::{
     extract_cursor_previews, fetch_plan_snapshot, fetch_plan_with_raw, preview_cursor_token,
     read_ide_cursor_auth, snapshot_from_usage_json, CursorAccountSnapshot, CursorAdapter,
-    CursorTokenPreview, PlanFetchError,
+    CursorTokenPreview, PlanFetchError, CURSOR_NOT_ENROLLED,
 };
 pub use grok::GrokAdapter;
 
@@ -24,6 +24,9 @@ pub use grok::GrokAdapter;
 pub struct CursorExtraAccount {
     pub access_token: String,
     pub account_label: String,
+    /// 统计起始（固定 cutoff）：只计入此时刻及之后的用量；None = 全部历史。
+    /// 云端 CSV 是全量导出，默认从加入账号时起报避免过统计。
+    pub report_since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Default)]

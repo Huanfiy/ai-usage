@@ -43,6 +43,60 @@ pub struct IngestRequest {
     pub buckets: Vec<UsageBucket>,
     #[serde(default)]
     pub sessions: Vec<UsageSession>,
+    /// Cursor 账号套餐快照（additive，可选）：agent 拉取并归一化后的数字，
+    /// 不含凭证与原始响应。旧 dash 忽略该字段，旧 agent 不发送。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cursor_accounts: Vec<CursorAccountUsage>,
+}
+
+/// 某个 Cursor 账号在 `fetched_at` 时刻的套餐用量快照。
+/// 百分比与账期字段保持服务端原始数值，不做换算。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CursorAccountUsage {
+    pub account_hash: String,
+    #[serde(default)]
+    pub account_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_cycle_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_percent: Option<f64>,
+    /// Bot/Sand 配额：服务端 `usagePercent` 原始数值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_period_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_next_reset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_available: Option<bool>,
+    /// Included API pool, cents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_used: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_limit: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub included_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bonus_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_used: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_limit: Option<i64>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+impl CursorAccountUsage {
+    pub fn normalize(mut self) -> Self {
+        self.account_hash = clamp(&self.account_hash, 64);
+        self.account_label = clamp(&self.account_label, 200);
+        self
+    }
 }
 
 fn default_schema_version() -> u32 {

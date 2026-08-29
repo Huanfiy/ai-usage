@@ -5,6 +5,9 @@ pub struct Claims {
     pub sub: String,
     pub email: String,
     pub exp: Option<i64>,
+    /// JWT `type` 声明：网站登录为 `web`（调不了原生 RPC），IDE 原生 token
+    /// 为其它值或缺省。仅用于预判 Bot 可用性与凭证类型展示。
+    pub token_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +18,8 @@ struct Payload {
     email: String,
     #[serde(default)]
     exp: Option<i64>,
+    #[serde(default, rename = "type")]
+    token_type: Option<String>,
 }
 
 /// Decode the JWT payload. The token itself is never returned to callers of parse.
@@ -30,6 +35,10 @@ pub fn decode_claims(token: &str) -> Option<Claims> {
         sub: sub.to_string(),
         email: parsed.email.trim().to_string(),
         exp: parsed.exp.filter(|e| *e > 0),
+        token_type: parsed
+            .token_type
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
     })
 }
 
@@ -111,6 +120,15 @@ pub(crate) fn fake_jwt_exp(sub: &str, email: &str, exp: Option<i64>) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn fake_jwt_typed(sub: &str, email: &str, token_type: &str) -> String {
+    let payload = format!(r#"{{"sub":"{sub}","email":"{email}","type":"{token_type}"}}"#);
+    format!(
+        "eyJhbGciOiJub25lIn0.{}.sig",
+        b64url_encode(payload.as_bytes())
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ai_usage_protocol::account_hash_from_sub;
@@ -134,5 +152,16 @@ mod tests {
     fn rejects_empty_sub() {
         let payload = b64url_encode(br#"{"email":"a@b.com"}"#);
         assert!(decode_claims(&format!("h.{payload}.s")).is_none());
+    }
+
+    #[test]
+    fn decodes_type_claim() {
+        let web = fake_jwt_typed("user_w", "w@x.com", "web");
+        assert_eq!(
+            decode_claims(&web).unwrap().token_type.as_deref(),
+            Some("web")
+        );
+        let plain = fake_jwt("user_p", "p@x.com");
+        assert_eq!(decode_claims(&plain).unwrap().token_type, None);
     }
 }
