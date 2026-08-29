@@ -118,8 +118,9 @@
       padding: 8px 12px;
       min-width: 0;
     }
-    .kpi-sync { flex: 1 1 420px; }
-    .kpi-tools { flex: 0 0 auto; position: relative; z-index: 2; }
+    /* 同步卡不无限扩张，剩余宽度留给工具卡（未来会有更多工具图标） */
+    .kpi-sync { flex: 0 1 640px; }
+    .kpi-tools { flex: 1 1 240px; position: relative; z-index: 2; }
     .kpi .label { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; }
     .kpi .label .syncing { color: var(--mint); }
     .sync-lines {
@@ -201,7 +202,7 @@
       margin: 2px 0 0 100px;
       overflow-wrap: anywhere;
     }
-    .tool-icons { display: flex; gap: 6px; margin-top: 6px; }
+    .tool-icons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .tool {
       position: relative;
       width: 38px;
