@@ -44,7 +44,7 @@ tar -xzf "ai-usage-${VER}-x86_64-unknown-linux-musl.tar.gz"
 install -m755 "ai-usage-${VER}-x86_64-unknown-linux-musl"/ai-usage-{agent,dash} ~/.local/bin/
 ```
 
-包内 `deploy/` 有可选 systemd 单元。Agent **不容器化**（必须读宿主机 `$HOME`）。看板可选 [deploy/Dockerfile.dash](deploy/Dockerfile.dash)。
+包内 `deploy/` 有可选 systemd 单元；`ai-usage-agent daemon install` 会把二进制统一装到 `~/.local/bin` 并注册 user service。user service 跟随登录会话：无图形会话的服务器需 `loginctl enable-linger $USER`，否则开机不启动、登出即停止。Agent **不容器化**（必须读宿主机 `$HOME`）。看板可选 [deploy/Dockerfile.dash](deploy/Dockerfile.dash)。
 
 ## 说明
 

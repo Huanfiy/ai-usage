@@ -52,7 +52,7 @@ mindmap
 | `ai-usage-agent` | 发现已安装工具、只读解析、本地聚合成 Bucket / Session、增量上报、可选 user-level daemon 与本机配置面板 | 写入其它工具目录；上报 prompt / 代码；看板查询；估算费用 |
 | `ai-usage-dash` | 鉴权接收、按主机落库、查询聚合、费用估算、内嵌静态 UI | 扫描宿主机 AI 日志；依赖 Postgres / Redis；运行时访问价目网站 |
 
-默认看板地址 `127.0.0.1:3847`。绑定非回环地址时须设置 `ui_token`，或声明前面已有反向代理（`--behind-proxy`）。每个看板地址一把 ingest Bearer token；本机回环默认不强制 UI 登录。采集端 daemon 另开本机面板（默认 `127.0.0.1:3848`），只绑回环，用来看/改本机配置、增删看板地址（新地址全量同步，其后按地址增量）、挂 Cursor 额外凭证；dash 不向 agent 下发配置。两档上报间隔按 Unix 钟面刻度对齐（5m → `:00/:05`，30m → `:00/:30`），不是上次同步后再等一段；启动后立刻同步一次。
+默认看板地址 `127.0.0.1:3847`。绑定非回环地址时须设置 `ui_token`，或声明前面已有反向代理（`--behind-proxy`）。每个看板地址一把 ingest Bearer token；本机回环默认不强制 UI 登录。采集端 daemon 另开本机面板（默认 `127.0.0.1:3848`），只绑回环，是配置主入口：看/改本机配置、增删看板地址（新地址全量同步，其后按地址增量）、管理 Cursor 采集账号（自动扫描展示、手动加入，采集严格用加入时那份凭证）；dash 不向 agent 下发配置。两档上报间隔按 Unix 钟面刻度对齐（5m → `:00/:05`，30m → `:00/:30`），不是上次同步后再等一段；启动后立刻同步一次；上报失败按退避重试、不推进钟面刻度。
 
 ## 数据契约
 
@@ -64,6 +64,7 @@ mindmap
 
 - **Bucket**（30 min 窗）：费用与趋势的计量单元。维度为 `source × model × project × bucket_start`。`cache_read` 与 `cache_creation` 必须分字段——Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，合并入库后费用无法回补。无 `cache_creation` 概念的源（如 Codex）该字段为 0。
 - **Session**：活跃度与明细列表。时间、条数与 token 分项（与 Bucket 五项同口径），没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。Cursor 无 session。Codex fork / sub-agent 仍出条目，token 为 0。
+- **Cursor 账号套餐快照**（`cursor_accounts`，additive 可选字段，schema_version 仍为 1）：agent 在 Cursor 档同步时对每个已加入账号拉 `usage-summary` 与 Bot/Sand 配额，归一化成数字（API / Auto / Bot 百分比、已用/额度、账期、重置时刻、`fetched_at`）随 ingest 上报，不含凭证与原始响应；web 型凭证调不了原生 RPC，Bot 字段留空。dash 按 `account_hash` 只存最新一份（`fetched_at` 新者胜，多机上报自动收敛），在独立的 Cursor 页展示，不参与费用与趋势。Cursor 的 token 桶另有每账号「统计起始」固定 cutoff（默认加入时刻，可改全部历史），避免全量 CSV 过统计。
 
 幂等按主机隔离（`host_id` 由服务端 token 映射，不取自 payload）：
 
@@ -80,16 +81,16 @@ mindmap
 
 ![token 派生 host_id，hostname 仅显示](assets/identity.svg)
 
-查询接口同一套：不传 `host` 为全主机汇总，传入则为单机视图。看板提供 KPI（含窗口内消息与时长合计）、时间范围、工具 / 模型 / 项目 / 主机筛选、趋势、四维分布、分时热力图（Bucket 小时格）、session 列表、主机上次同步，以及 token 签发、吊销与删除。已吊销的主机可删除：清掉该机 token、主机行与其用量，其它主机与 `acct:` 行不动。
+查询接口同一套：不传 `host` 为全主机汇总，传入则为单机视图。看板提供 KPI（含窗口内消息与时长合计）、时间范围、工具 / 模型 / 项目 / 主机筛选、趋势、四维分布、分时热力图（Bucket 小时格）、session 列表、主机上次同步，以及 token 签发、吊销与删除。已吊销的主机可删除：清掉该机 token、主机行与其用量，其它主机与 `acct:` 行不动。另有独立的 Cursor 页（不挂时间范围与筛选）展示各账号最新套餐快照。
 
 ## 端到端数据流
 
-安静机器上，content-hash 与本地 state 一致则不上报（0 字节）。成功批次才把 hash 写入 agent state。本地日志被删除时，只修剪 agent state，**不自动删看板历史**，避免解析短暂失败被当成「全量重传」。
+安静机器上，content-hash 与本地 state 一致则不上报（0 字节；例外：已加入 Cursor 账号的机器在 Cursor 档会附带一个仅含套餐快照的小请求——快照是当前状态，不参与增量 hash）。成功批次才把 hash 写入 agent state。本地日志被删除时，只修剪 agent state，**不自动删看板历史**，避免解析短暂失败被当成「全量重传」。
 
 ```mermaid
 flowchart LR
   logs[Claude / Codex / Grok 日志] -->|只读| parse[本机解析]
-  cursor[Cursor：本机 JWT + 账号 CSV] -->|只读| parse
+  cursor[Cursor：已加入账号的 CSV] -->|只读| parse
   parse --> norm[Bucket + Session]
   norm --> diff{相对本地 state<br/>content-hash}
   diff -->|未变| skip[不上报]
