@@ -45,7 +45,7 @@ onUnmounted(() => {
 })
 
 // 套餐百分比是服务端原始数值（0–100 语义），不做换算
-function pct(n: number | null | undefined): string {
+function pctText(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return '—'
   return `${Math.round(n * 10) / 10}%`
 }
@@ -67,15 +67,32 @@ function usd(cents: number | null | undefined): string | null {
   return `$${(Number(cents) / 100).toFixed(2)}`
 }
 
-function metaBits(a: CursorAccountRow): string {
-  const bits: string[] = []
-  const used = usd(a.plan_used)
-  if (used) bits.push(`已用 ${used}`)
-  const bonus = usd(a.bonus_cents)
-  if (a.bonus_cents) bits.push(`赠额 ${bonus}`)
-  if (a.billing_cycle_end) bits.push(`账期至 ${String(a.billing_cycle_end).slice(0, 10)}`)
-  if (a.bot_next_reset) bits.push(`Bot 重置 ${String(a.bot_next_reset).slice(0, 10)}`)
-  return bits.join(' · ')
+// 到重置时刻的倒计时：≥1 天 d/h，<1 天 h/m；已过则「待重置」
+function countdown(iso: string | null | undefined): { text: string; soon: boolean } | null {
+  if (!iso) return null
+  const ms = new Date(iso).getTime() - Date.now()
+  if (Number.isNaN(ms)) return null
+  if (ms <= 0) return { text: '待重置', soon: true }
+  const h = Math.floor(ms / 3_600_000)
+  const d = Math.floor(h / 24)
+  const text =
+    d >= 1
+      ? `${d}d ${h % 24}h`
+      : h >= 1
+        ? `${h}h ${Math.floor((ms % 3_600_000) / 60_000)}m`
+        : `${Math.max(1, Math.floor(ms / 60_000))}m`
+  return { text, soon: ms < 86_400_000 }
+}
+
+// 右侧数值：「用量/额度 · 百分比」；没有金额时只显示百分比
+function meterValue(pct: number | null | undefined, used?: number | null, limit?: number | null): string {
+  const parts: string[] = []
+  const u = usd(used)
+  const l = usd(limit)
+  if (u && l) parts.push(`${u}/${l}`)
+  else if (u) parts.push(u)
+  parts.push(pctText(pct))
+  return parts.join(' · ')
 }
 
 const USAGE_DAYS = 30
@@ -163,15 +180,39 @@ function onLeave() {
 
           <div class="meters">
             <div class="meter">
-              <div class="meter-row"><span>API</span><b>{{ pct(a.api_percent) }}</b></div>
+              <div class="meter-row">
+                <span>API</span>
+                <span
+                  class="reset"
+                  :class="{ soon: countdown(a.billing_cycle_end)?.soon }"
+                  :title="a.billing_cycle_end ? `账期重置于 ${fmtTime(a.billing_cycle_end)}` : undefined"
+                >{{ countdown(a.billing_cycle_end) ? `重置 ${countdown(a.billing_cycle_end)!.text}` : '' }}</span>
+                <b class="val" title="套餐包含额度：已用 / 额度（plan.used / plan.limit）">{{ meterValue(a.api_percent, a.plan_used, a.plan_limit) }}</b>
+              </div>
               <div class="bar" :class="barClass(a.api_percent)"><i :style="{ width: barWidth(a.api_percent) }" /></div>
             </div>
             <div class="meter">
-              <div class="meter-row"><span>Auto</span><b>{{ pct(a.auto_percent) }}</b></div>
+              <div class="meter-row">
+                <span>Auto</span>
+                <span
+                  class="reset"
+                  :class="{ soon: countdown(a.billing_cycle_end)?.soon }"
+                  :title="a.billing_cycle_end ? `账期重置于 ${fmtTime(a.billing_cycle_end)}` : undefined"
+                >{{ countdown(a.billing_cycle_end) ? `重置 ${countdown(a.billing_cycle_end)!.text}` : '' }}</span>
+                <b class="val" title="Auto 池：包含额度 + 附赠池的合计，用量按 autoPercentUsed 换算">{{ meterValue(a.auto_percent, a.auto_used, a.auto_limit) }}</b>
+              </div>
               <div class="bar" :class="barClass(a.auto_percent)"><i :style="{ width: barWidth(a.auto_percent) }" /></div>
             </div>
             <div v-if="a.bot_percent != null" class="meter">
-              <div class="meter-row"><span>Bot</span><b>{{ pct(a.bot_percent) }}</b></div>
+              <div class="meter-row">
+                <span>Bot</span>
+                <span
+                  class="reset"
+                  :class="{ soon: countdown(a.bot_next_reset)?.soon }"
+                  :title="a.bot_next_reset ? `Bot 周期重置于 ${fmtTime(a.bot_next_reset)}` : undefined"
+                >{{ countdown(a.bot_next_reset) ? `重置 ${countdown(a.bot_next_reset)!.text}` : '' }}</span>
+                <b class="val">{{ meterValue(a.bot_percent) }}</b>
+              </div>
               <div class="bar" :class="barClass(a.bot_percent)"><i :style="{ width: barWidth(a.bot_percent) }" /></div>
             </div>
             <div v-else class="bot-note" title="Bot 用量走 Cursor 原生 RPC，只认 IDE 原生 access token；web 凭证或未拉到时无数据">
@@ -179,7 +220,11 @@ function onLeave() {
             </div>
           </div>
 
-          <div v-if="metaBits(a)" class="meta">{{ metaBits(a) }}</div>
+          <div
+            v-if="a.bonus_cents"
+            class="meta"
+            title="附赠池：本账期内随套餐附赠的额外用量，随账期重置；与信用余额不同"
+          >附赠池 {{ usd(a.bonus_cents) }}</div>
           <div class="foot">快照 {{ fmtTime(a.fetched_at) }}</div>
 
           <div v-if="hoverHash === a.account_hash" class="usage-pop">
@@ -351,18 +396,28 @@ function onLeave() {
   gap: 8px;
 }
 .meter-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
   align-items: baseline;
   gap: 8px;
   font-size: 11px;
   color: var(--muted);
   margin-bottom: 4px;
 }
-.meter-row b {
+.meter-row .reset {
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.meter-row .reset.soon {
+  color: var(--amber);
+}
+.meter-row .val {
   color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
 }
 .bar {
   height: 6px;

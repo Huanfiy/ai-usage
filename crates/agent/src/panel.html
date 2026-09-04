@@ -413,15 +413,23 @@
     .chip.bad { border-color: #5a3030; color: var(--rose); }
     .usage { display: flex; flex-direction: column; gap: 8px; }
     .usage .meter-row {
-      display: flex;
-      justify-content: space-between;
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
       align-items: baseline;
       gap: 8px;
       font-size: 11px;
       color: var(--muted);
       margin-bottom: 4px;
     }
-    .usage .meter-row b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .usage .meter-reset { text-align: left; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .usage .meter-reset.soon { color: var(--amber); }
+    .usage .meter-val {
+      color: var(--text);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      white-space: nowrap;
+    }
     .bar {
       height: 6px;
       background: #1c2430;
@@ -439,6 +447,7 @@
       justify-content: space-between;
       gap: 8px;
     }
+    .acct-foot .btn { white-space: nowrap; flex-shrink: 0; }
     .meta-col {
       display: flex;
       flex-direction: column;
@@ -788,7 +797,7 @@
   <dialog id="add-dlg" aria-labelledby="add-title">
     <form class="dlg-card" id="add-form">
       <h3 id="add-title">添加 Cursor 账号</h3>
-      <p class="dlg-lead">两种凭证均可：原生 access token（IDE 登录，`state.vscdb` 的 cursorAuth/accessToken，Bot 用量可查）或 WorkosCursorSessionToken（网站 cookie，web 型，Bot 不可用）；也可上传账号导出 JSON（提取 access_token）。新账号默认从加入时刻起报，可在卡片上改统计起始。</p>
+      <p class="dlg-lead">两种凭证均可：原生 access token（IDE 登录，`state.vscdb` 的 cursorAuth/accessToken，Bot 用量可查）或 WorkosCursorSessionToken（网站 cookie，web 型，Bot 不可用）；也可上传账号导出 JSON（提取 access_token）。新账号默认从加入时刻起报，可在卡片上调整采集起始时间。</p>
       <label class="field" for="token">粘贴凭证</label>
       <textarea id="token" placeholder="eyJ… 或 sub::eyJ… 或 JSON 数组"></textarea>
       <label class="drop" id="drop">
@@ -819,8 +828,8 @@
 
   <dialog id="since-dlg" aria-labelledby="since-title">
     <form class="dlg-card" id="since-form">
-      <h3 id="since-title">统计起始时间</h3>
-      <p class="dlg-lead">云端 CSV 是全量历史；只上报该日期（UTC 0 点）及之后的用量。已上报到看板的历史不会自动删除。</p>
+      <h3 id="since-title">调整采集起始时间</h3>
+      <p class="dlg-lead">云端 CSV 是全量历史；只上报该日期（UTC 0 点）及之后的用量。默认为凭证加入时刻。已上报到看板的历史不会自动删除。</p>
       <label class="field" for="since-date">起始日期
         <input id="since-date" type="date" />
       </label>
@@ -906,13 +915,23 @@
     };
 
     function fmtExp(exp) {
-      if (!exp) return { text: "到期时间未知", kind: "" };
+      if (!exp) return { text: "凭证到期时间未知", title: "", kind: "" };
       const ms = exp * 1000 - Date.now();
       const days = Math.floor(ms / 86400000);
-      const when = new Date(exp * 1000).toISOString().slice(0, 10);
-      if (ms <= 0) return { text: "已过期 · " + when, kind: "bad" };
-      if (days <= 7) return { text: "剩余 " + days + " 天 · " + when, kind: "warn" };
-      return { text: "剩余 " + days + " 天 · " + when, kind: "" };
+      const title = "凭证到期 " + fmtSessTime(new Date(exp * 1000).toISOString());
+      if (ms <= 0) return { text: "凭证已过期", title, kind: "bad" };
+      return { text: "凭证有效期剩余 " + days + " 天", title, kind: days <= 7 ? "warn" : "" };
+    }
+    // 到某时刻的倒计时：≥1 天显示 d/h，<1 天显示 h/m；已过则「待重置」
+    function fmtCountdown(iso, expiredText) {
+      if (!iso) return null;
+      const ms = new Date(iso).getTime() - Date.now();
+      if (Number.isNaN(ms)) return null;
+      if (ms <= 0) return { text: expiredText || "待重置", soon: true, expired: true };
+      const h = Math.floor(ms / 3600000);
+      const d = Math.floor(h / 24);
+      const text = d >= 1 ? d + "d " + (h % 24) + "h" : h >= 1 ? h + "h " + Math.floor((ms % 3600000) / 60000) + "m" : Math.max(1, Math.floor(ms / 60000)) + "m";
+      return { text, soon: ms < 86400000 };
     }
     function fmtPct(n) {
       if (n == null || Number.isNaN(n)) return "—";
@@ -922,12 +941,27 @@
       if (cents == null || Number.isNaN(Number(cents))) return null;
       return "$" + (Number(cents) / 100).toFixed(2);
     }
-    function meter(label, pct) {
+    // opts.resetAt：中间列显示到重置时刻的倒计时；opts.used / opts.limit（美分）：
+    // 右侧显示「用量/额度 · 百分比」，没有金额时只显示百分比，同一字体右对齐。
+    function meter(label, pct, opts) {
       if (pct == null) return null;
+      opts = opts || {};
       const box = el("div", "meter");
       const row = el("div", "meter-row");
       row.appendChild(el("span", "", label));
-      row.appendChild(el("b", "", fmtPct(pct)));
+      const cd = fmtCountdown(opts.resetAt);
+      const reset = el("span", "meter-reset" + (cd && cd.soon ? " soon" : ""), cd ? "重置 " + cd.text : "");
+      if (cd) reset.title = "重置于 " + fmtSessTime(opts.resetAt);
+      row.appendChild(reset);
+      const parts = [];
+      const used = fmtUsd(opts.used);
+      const limit = fmtUsd(opts.limit);
+      if (used && limit) parts.push(used + "/" + limit);
+      else if (used) parts.push(used);
+      parts.push(fmtPct(pct));
+      const val = el("b", "meter-val", parts.join(" · "));
+      if (used && opts.title) val.title = opts.title;
+      row.appendChild(val);
       box.appendChild(row);
       const bar = el("div", "bar" + (pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""));
       const i = el("i");
@@ -1249,10 +1283,22 @@
       top.appendChild(chips);
       card.appendChild(top);
 
-      const apiMeter = meter("API", a.api_percent);
-      const autoMeter = meter("Auto", a.auto_percent);
-      const botMeter = a.token_type === "web" ? null : meter("Bot", a.bot_percent);
-      if (apiMeter || autoMeter || botMeter || a.billing_cycle_end || a.bonus_cents || a.plan_used != null) {
+      // API：plan.used / plan.limit（套餐包含额度）；Auto：autoPercent × (included+bonus)
+      // 换算的美分 / 总池；Bot 只有百分比。账期与 Bot 周期的重置倒计时放在各条中间。
+      const apiMeter = meter("API", a.api_percent, {
+        resetAt: a.billing_cycle_end,
+        used: a.plan_used,
+        limit: a.plan_limit,
+        title: "套餐包含额度：已用 / 额度（usage-summary plan.used / plan.limit）",
+      });
+      const autoMeter = meter("Auto", a.auto_percent, {
+        resetAt: a.billing_cycle_end,
+        used: a.auto_used,
+        limit: a.auto_limit,
+        title: "Auto 池：包含额度 + 附赠池的合计，用量按 autoPercentUsed 换算",
+      });
+      const botMeter = a.token_type === "web" ? null : meter("Bot", a.bot_percent, { resetAt: a.bot_next_reset });
+      if (apiMeter || autoMeter || botMeter || a.bonus_cents) {
         const box = el("div", "usage");
         if (apiMeter) box.appendChild(apiMeter);
         if (autoMeter) box.appendChild(autoMeter);
@@ -1262,12 +1308,11 @@
           note.title = "原生 RPC 只认 IDE 原生 access token；用「导入当前 IDE 登录」或粘贴原生 token 可获得 Bot 用量";
           box.appendChild(note);
         }
-        const bits = [];
-        if (a.plan_used != null) bits.push("已用 " + fmtUsd(a.plan_used));
-        if (a.bonus_cents) bits.push("赠额 " + fmtUsd(a.bonus_cents));
-        if (a.billing_cycle_end) bits.push("账期至 " + String(a.billing_cycle_end).slice(0, 10));
-        if (a.bot_next_reset) bits.push("Bot 重置 " + String(a.bot_next_reset).slice(0, 10));
-        if (bits.length) box.appendChild(el("div", "meta", bits.join(" · ")));
+        if (a.bonus_cents) {
+          const meta = el("div", "meta", "附赠池 " + fmtUsd(a.bonus_cents));
+          meta.title = "附赠池：本账期内随套餐附赠的额外用量，随账期重置；与有到期日的信用余额不同";
+          box.appendChild(meta);
+        }
         card.appendChild(box);
       }
       if (a.usage_error) {
@@ -1281,16 +1326,17 @@
       const metaCol = el("div", "meta-col");
       const exp = fmtExp(a.exp);
       const expEl = el("div", "meta", exp.text);
+      if (exp.title) expEl.title = exp.title;
       if (exp.kind === "bad") expEl.style.color = "var(--rose)";
       if (exp.kind === "warn") expEl.style.color = "var(--amber)";
       metaCol.appendChild(expEl);
       if (a.stored) {
-        const sinceText = a.report_since
-          ? "统计起始 " + String(a.report_since).slice(0, 10)
-          : "统计全部历史";
-        const sinceEl = el("button", "since-link", sinceText);
+        const sinceEl = el("button", "since-link", "调整采集起始时间");
         sinceEl.type = "button";
-        sinceEl.title = "云端 CSV 是全量历史；点击修改只上报某日期之后的用量";
+        const cur = a.report_since
+          ? "当前从 " + String(a.report_since).slice(0, 10) + " 起上报"
+          : "当前上报全部历史";
+        sinceEl.title = cur + "。默认为凭证加入时刻（云端 CSV 是全量历史，避免把加入前的用量算进来）；点击修改";
         sinceEl.onclick = () => openSinceDlg(a);
         metaCol.appendChild(sinceEl);
       }
@@ -1755,7 +1801,7 @@
           body: JSON.stringify({ report_since: value }),
         });
         $("since-dlg").close();
-        setMsg("acct-msg", value ? "统计起始已更新，将按新起始重算增量" : "已改为上报全部历史", "ok");
+        setMsg("acct-msg", value ? "采集起始时间已更新，将按新起始重算增量" : "已改为上报全部历史", "ok");
         refresh();
       } catch (e) {
         setMsg("since-msg", e.message, "err");
