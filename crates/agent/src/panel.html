@@ -354,6 +354,7 @@
       background: #161c24;
     }
     .icon-btn svg { width: 15px; height: 15px; display: block; }
+    .icon-btn.attn { color: var(--amber); border-color: #5a4630; }
     .icon-btn.spin {
       color: var(--mint);
       border-color: var(--mint);
@@ -487,6 +488,20 @@
     }
     .sess-time { font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
     .sess-empty { color: var(--muted); font-size: 13px; padding: 16px 0; text-align: center; }
+    .credit-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b0e12;
+    }
+    .credit-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+    .credit-name { color: var(--text); font-size: 13px; }
+    .credit-val { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .credit-exp { font-size: 11px; color: var(--muted); }
+    .credit-exp.soon { color: var(--amber); }
     .empty {
       color: var(--muted);
       padding: 28px 8px;
@@ -843,6 +858,20 @@
     </form>
   </dialog>
 
+  <dialog id="credit-dlg" aria-labelledby="credit-title">
+    <div class="dlg-card">
+      <div class="json-head">
+        <div>
+          <h3 id="credit-title">信用余额</h3>
+          <p class="dlg-lead">对应 cursor.com 账单页 Credits：有到期日、跨账期自动抵扣用量，与套餐附赠池不同。随 Cursor 同步周期更新。</p>
+        </div>
+        <button type="button" class="icon-btn" id="credit-close" title="关闭" aria-label="关闭"></button>
+      </div>
+      <div class="sess-list" id="credit-list"></div>
+      <div class="meta" id="credit-foot"></div>
+    </div>
+  </dialog>
+
   <dialog id="sess-dlg" class="wide" aria-labelledby="sess-title">
     <div class="dlg-card">
       <div class="json-head">
@@ -894,6 +923,12 @@
         "M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1",
       ],
       x: ["M18 6 6 18", "M6 6l12 12"],
+      coins: [
+        "M8 8a6 6 0 1 0 12 0A6 6 0 1 0 8 8z",
+        "M18.09 10.37A6 6 0 1 1 10.34 18",
+        "M7 6h1v4",
+        "M16.71 13.88l.7.71-2.82 2.82",
+      ],
       devices: [
         "M4 5h12a2 2 0 0 1 2 2v3",
         "M2 17h12",
@@ -1249,6 +1284,13 @@
       jsonBtn.onclick = () => openJson(a);
       tools.appendChild(refreshBtn);
       tools.appendChild(jsonBtn);
+      if (a.credits) {
+        const soon = a.credits.expires_at && new Date(a.credits.expires_at).getTime() - Date.now() < 3 * 86400000;
+        const creditBtn = iconBtn("coins", "信用余额 " + fmtUsd(a.credits.remaining_cents) + " / " + fmtUsd(a.credits.total_cents));
+        if (soon) creditBtn.classList.add("attn");
+        creditBtn.onclick = () => openCredits(a);
+        tools.appendChild(creditBtn);
+      }
       if (a.stored || a.from_ide) {
         const sessBtn = iconBtn("devices", "登录会话");
         sessBtn.onclick = () => openSessions(a);
@@ -1665,7 +1707,7 @@
     }
     function fillJson(a) {
       $("json-title").textContent = a.account_label || a.account_hash;
-      $("json-sub").textContent = "GET /api/usage-summary";
+      $("json-sub").textContent = "GET /api/usage-summary · 叠加 botUsage（Sand RPC GetSandUsageStatus）";
       $("json-body").textContent = a.usage_raw
         ? JSON.stringify(a.usage_raw, null, 2)
         : "尚未拉到 usage-summary。点刷新后再看。";
@@ -1679,6 +1721,65 @@
       jsonHash = null;
       if ($("json-dlg").open) $("json-dlg").close();
     }
+    // 服务端 int64 以字符串返回，这里统一转数
+    function centsOf(v) {
+      if (v == null) return null;
+      const n = Number(v);
+      return Number.isNaN(n) ? null : n;
+    }
+    function msOf(v) {
+      const n = centsOf(v);
+      return n == null ? null : new Date(n).toISOString();
+    }
+    function openCredits(a) {
+      const c = a.credits;
+      if (!c) return;
+      $("credit-title").textContent = "信用余额 · " + (a.account_label || a.account_hash);
+      const box = $("credit-list");
+      box.textContent = "";
+      const grants = Array.isArray(c.grants) ? c.grants : [];
+      if (!grants.length) {
+        box.appendChild(el("div", "sess-empty", "没有信用额度"));
+      }
+      grants.forEach((g) => {
+        const remaining = centsOf(g.remainingCents);
+        const total = centsOf(g.totalCents);
+        const expIso = msOf(g.expiresAtMs);
+        const row = el("div", "credit-row");
+        const head = el("div", "credit-head");
+        head.appendChild(el("span", "credit-name", g.displayName || "Credit"));
+        head.appendChild(el("span", "credit-val",
+          (fmtUsd(remaining) || "—") + " / " + (fmtUsd(total) || "—")
+          + (total ? " · 剩 " + Math.round((remaining / total) * 100) + "%" : "")));
+        row.appendChild(head);
+        if (total) {
+          const usedPct = Math.max(0, Math.min(100, 100 - (remaining / total) * 100));
+          const bar = el("div", "bar" + (usedPct >= 90 ? " hot" : usedPct >= 70 ? " warn" : ""));
+          const i = el("i");
+          i.style.width = usedPct + "%";
+          bar.appendChild(i);
+          row.appendChild(bar);
+        }
+        if (expIso) {
+          const cd = fmtCountdown(expIso, "已到期");
+          const tail = !cd ? "" : cd.expired ? "（已到期）" : "（剩 " + cd.text + "）";
+          const exp = el("div", "credit-exp" + (cd && cd.soon ? " soon" : ""), "到期 " + fmtSessTime(expIso) + tail);
+          row.appendChild(exp);
+        }
+        box.appendChild(row);
+      });
+      const foot = [];
+      if (grants.length > 1) foot.push("合计 " + fmtUsd(c.remaining_cents) + " / " + fmtUsd(c.total_cents));
+      foot.push("更新于 " + fmtWhen(c.fetched_at) + " · 随 Cursor 同步周期拉取");
+      $("credit-foot").textContent = foot.join(" · ");
+      $("credit-dlg").showModal();
+    }
+    $("credit-close").appendChild(svgIcon(ICONS.x));
+    $("credit-close").onclick = () => $("credit-dlg").close();
+    $("credit-dlg").addEventListener("click", (e) => {
+      if (e.target === $("credit-dlg")) $("credit-dlg").close();
+    });
+
     let sessHash = null;
     let sessLabel = "";
     function fmtSessTime(iso) {

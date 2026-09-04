@@ -84,6 +84,10 @@ export type CursorAccountRow = {
   bonus_cents?: number | null
   auto_used?: number | null
   auto_limit?: number | null
+  credit_remaining_cents?: number | null
+  credit_total_cents?: number | null
+  credit_expires_at?: string | null
+  credit_label?: string | null
   fetched_at: string
   updated_at: string
 }

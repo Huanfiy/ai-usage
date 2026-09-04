@@ -3,6 +3,9 @@ use std::time::Duration;
 const DEFAULT_BASE: &str = "https://cursor.com";
 const EXPORT_PATH: &str = "/api/dashboard/export-usage-events-csv?strategy=tokens";
 const SUMMARY_PATH: &str = "/api/usage-summary";
+/// 信用余额（网页 Credits 卡）：独立于套餐附赠池，有到期日、跨账期扣减。
+/// 这条比 `get-credit-grants-balance` 多 `displayName` / `expiresAtMs`。
+const CREDIT_GRANTS_PATH: &str = "/api/dashboard/get-client-visible-credit-grants";
 const SESSIONS_PATH: &str = "/api/auth/sessions";
 const SESSIONS_REVOKE_PATH: &str = "/api/auth/sessions/revoke";
 const SESSION_COOKIE: &str = "WorkosCursorSessionToken";
@@ -37,6 +40,18 @@ pub fn fetch_usage_summary(sub: &str, jwt: &str) -> Result<String, FetchError> {
             &summary_url(),
             cookie,
             "application/json",
+            SUMMARY_TIMEOUT_SECS,
+        )
+    })
+}
+
+/// `POST get-client-visible-credit-grants`，Cookie 鉴权，空对象请求体。
+pub fn fetch_credit_grants(sub: &str, jwt: &str) -> Result<String, FetchError> {
+    fetch_with_cookies(sub, jwt, |cookie| {
+        post_json(
+            &web_url(CREDIT_GRANTS_PATH),
+            cookie,
+            "{}",
             SUMMARY_TIMEOUT_SECS,
         )
     })

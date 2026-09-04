@@ -268,21 +268,43 @@ pub fn run_sync_jobs(
         all_buckets = reaggregate(all_buckets);
     }
 
-    // Cursor 档：为已加入账号拉套餐快照（usage-summary + Bot/Sand），
+    // Cursor 档：为已加入账号拉套餐快照（usage-summary + Bot/Sand + Credits），
     // 归一化后随 ingest 发往各 dest。失败只记 warning，不阻塞桶上报。
     let cursor_in_scope = only_sources.map_or(true, |s| s.contains(SOURCE_CURSOR));
     let mut snapshots: Vec<CursorAccountUsage> = Vec::new();
     if cursor_in_scope && !extras.accounts.is_empty() && !cfg!(test) {
         let mut snap_warnings = Vec::new();
+        let mut credits = HashMap::new();
         for acct in &extras.accounts {
             match ai_usage_parsers::fetch_plan_with_raw(&acct.access_token) {
-                Ok((snap, _raw)) => snapshots.push(account_usage(acct, snap)),
+                Ok((mut snap, _raw)) => {
+                    // 信用余额只在这里拉（与全量 CSV 同频），叠加进上报快照，
+                    // 并落缓存文件给面板；失败静默留空，不影响套餐快照。
+                    if let Ok(raw) = ai_usage_parsers::fetch_credit_grants(&acct.access_token) {
+                        ai_usage_parsers::credit_overlay(&mut snap, &raw);
+                        credits.insert(
+                            acct.account_hash.clone(),
+                            crate::cursor_credits::CreditEntry::from_snapshot(&snap, &raw),
+                        );
+                    }
+                    snapshots.push(account_usage(acct, snap));
+                }
                 Err(err) => snap_warnings.push(format!(
                     "Cursor: {} 套餐快照拉取失败（{}）",
                     acct.account_label,
                     plan_err_brief(err)
                 )),
             }
+        }
+        let known: HashSet<String> = extras
+            .accounts
+            .iter()
+            .map(|a| a.account_hash.clone())
+            .collect();
+        if let Err(err) =
+            crate::cursor_credits::store(data_dir, &credits, |h| known.contains(h))
+        {
+            snap_warnings.push(format!("Cursor: 信用余额缓存写入失败（{err}）"));
         }
         if let Some(src) = sources.iter_mut().find(|s| s.source == SOURCE_CURSOR) {
             src.warnings.extend(snap_warnings);
@@ -338,6 +360,10 @@ fn account_usage(
         bonus_cents: snap.bonus_cents,
         auto_used: snap.auto_used,
         auto_limit: snap.auto_limit,
+        credit_remaining_cents: snap.credit_remaining_cents,
+        credit_total_cents: snap.credit_total_cents,
+        credit_expires_at: snap.credit_expires_at,
+        credit_label: snap.credit_label,
         fetched_at: chrono::Utc::now(),
     }
     .normalize()

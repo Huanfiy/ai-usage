@@ -88,6 +88,16 @@ pub struct CursorAccountUsage {
     pub auto_used: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_limit: Option<i64>,
+    /// 信用余额（网页 Credits 卡，cents）：独立于 `bonus_cents` 附赠池，
+    /// 有到期日、跨账期扣减。additive，旧 agent 不发送。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_remaining_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_total_cents: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_expires_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_label: Option<String>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -95,6 +105,7 @@ impl CursorAccountUsage {
     pub fn normalize(mut self) -> Self {
         self.account_hash = clamp(&self.account_hash, 64);
         self.account_label = clamp(&self.account_label, 200);
+        self.credit_label = self.credit_label.map(|s| clamp(&s, 200));
         self
     }
 }

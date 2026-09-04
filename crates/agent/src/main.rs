@@ -1,5 +1,6 @@
 mod config;
 mod cursor_accounts;
+mod cursor_credits;
 mod daemon;
 mod panel;
 mod state;

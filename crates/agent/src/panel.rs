@@ -989,12 +989,17 @@ fn account_token(
 }
 
 fn apply_cached_plan(state: &PanelState, views: &mut [AccountView]) {
+    let mut credits = crate::cursor_credits::load(&state.data_dir);
     for view in views {
         if let Some(entry) = state.cached_plan(&view.account_hash) {
             view.snapshot = entry.snapshot;
             view.usage_raw = Some(entry.raw);
         }
         view.usage_error = state.plan_error(&view.account_hash);
+        // 信用余额来自同步周期写的缓存文件，只在真有额度时下发
+        view.credits = credits
+            .remove(&view.account_hash)
+            .filter(crate::cursor_credits::CreditEntry::has_credit);
     }
 }
 
@@ -1566,6 +1571,50 @@ mod tests {
         let (st, _, out) =
             post(&serde_json::json!({ "session_id": "abc123", "type": "SESSION_TYPE_CLIENT" }));
         assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn status_exposes_credits_only_when_positive() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let hash = status["cursor_accounts"][0]["account_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(status["cursor_accounts"][0].get("credits").is_none());
+
+        let mk = |total: i64| crate::cursor_credits::CreditEntry {
+            fetched_at: "2026-09-04T00:00:00Z".into(),
+            remaining_cents: Some(total),
+            total_cents: Some(total),
+            expires_at: None,
+            label: Some("Promo".into()),
+            grants: vec![serde_json::json!({"displayName": "Promo"})],
+        };
+        let mut zero = std::collections::HashMap::new();
+        zero.insert(hash.clone(), mk(0));
+        crate::cursor_credits::store(&state.data_dir, &zero, |_| true).unwrap();
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        assert!(status["cursor_accounts"][0].get("credits").is_none());
+
+        let mut some = std::collections::HashMap::new();
+        some.insert(hash, mk(10000));
+        crate::cursor_credits::store(&state.data_dir, &some, |_| true).unwrap();
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let credits = &status["cursor_accounts"][0]["credits"];
+        assert_eq!(credits["total_cents"], 10000);
+        assert_eq!(credits["grants"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -172,6 +172,7 @@ pub fn public_views(file: &CursorAccountsFile) -> Vec<AccountView> {
                 snapshot: CursorAccountSnapshot::default(),
                 usage_raw: None,
                 usage_error: None,
+                credits: None,
             }
         })
         .collect()
@@ -200,6 +201,10 @@ pub struct AccountView {
     pub usage_raw: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_error: Option<String>,
+    /// 信用余额（Cursor 同步周期拉取的缓存）；只在总额 > 0 时给出，
+    /// 前端据此决定是否显示「信用余额」按钮。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credits: Option<crate::cursor_credits::CreditEntry>,
 }
 
 impl AccountView {
@@ -217,6 +222,7 @@ impl AccountView {
             snapshot: preview.snapshot.clone(),
             usage_raw: None,
             usage_error: None,
+            credits: None,
         }
     }
 }

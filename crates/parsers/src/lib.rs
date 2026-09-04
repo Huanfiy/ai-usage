@@ -14,7 +14,8 @@ use ai_usage_protocol::{UsageBucket, UsageSession};
 pub use claude::ClaudeCodeAdapter;
 pub use codex::CodexAdapter;
 pub use cursor::{
-    extract_cursor_previews, fetch_plan_snapshot, fetch_plan_with_raw, fetch_sessions,
+    credit_overlay, extract_cursor_previews, fetch_credit_grants, fetch_plan_snapshot,
+    fetch_plan_with_raw, fetch_sessions,
     preview_cursor_token, read_ide_cursor_auth, revoke_session, session_type_code,
     snapshot_from_usage_json, CursorAccountSnapshot, CursorAdapter, CursorSession,
     CursorTokenPreview, PlanFetchError, CURSOR_NOT_ENROLLED,
