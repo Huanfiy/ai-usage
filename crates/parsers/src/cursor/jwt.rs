@@ -8,6 +8,9 @@ pub struct Claims {
     /// JWT `type` 声明：网站登录为 `web`（调不了原生 RPC），IDE 原生 token
     /// 为其它值或缺省。仅用于预判 Bot 可用性与凭证类型展示。
     pub token_type: Option<String>,
+    /// Cursor 自有 `time` 声明（签发秒级时间戳，字符串形式）。与
+    /// `/api/auth/sessions` 里对应会话的 `createdAt` 同秒，用来认出自己。
+    pub issued_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -20,6 +23,8 @@ struct Payload {
     exp: Option<i64>,
     #[serde(default, rename = "type")]
     token_type: Option<String>,
+    #[serde(default)]
+    time: Option<serde_json::Value>,
 }
 
 /// Decode the JWT payload. The token itself is never returned to callers of parse.
@@ -39,6 +44,13 @@ pub fn decode_claims(token: &str) -> Option<Claims> {
             .token_type
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty()),
+        issued_at: parsed
+            .time
+            .and_then(|t| {
+                t.as_i64()
+                    .or_else(|| t.as_str().and_then(|s| s.trim().parse().ok()))
+            })
+            .filter(|t| *t > 0),
     })
 }
 
@@ -152,6 +164,21 @@ mod tests {
     fn rejects_empty_sub() {
         let payload = b64url_encode(br#"{"email":"a@b.com"}"#);
         assert!(decode_claims(&format!("h.{payload}.s")).is_none());
+    }
+
+    #[test]
+    fn decodes_time_claim_as_string_or_number() {
+        let s = b64url_encode(br#"{"sub":"u","time":"1788428773"}"#);
+        assert_eq!(
+            decode_claims(&format!("h.{s}.s")).unwrap().issued_at,
+            Some(1788428773)
+        );
+        let n = b64url_encode(br#"{"sub":"u","time":1788428773}"#);
+        assert_eq!(
+            decode_claims(&format!("h.{n}.s")).unwrap().issued_at,
+            Some(1788428773)
+        );
+        assert_eq!(decode_claims(&fake_jwt("u", "")).unwrap().issued_at, None);
     }
 
     #[test]

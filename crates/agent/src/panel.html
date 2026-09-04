@@ -457,6 +457,27 @@
       text-underline-offset: 3px;
     }
     .since-link:hover { color: var(--mint); }
+    .sess-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+    .sess-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b0e12;
+    }
+    .sess-row.cur { border-color: var(--mint); }
+    .sess-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .sess-kind { font-size: 13px; color: var(--text); display: flex; gap: 6px; align-items: center; }
+    .sess-id {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: ui-monospace, "IBM Plex Mono", "SF Mono", Menlo, monospace;
+    }
+    .sess-time { font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
+    .sess-empty { color: var(--muted); font-size: 13px; padding: 16px 0; text-align: center; }
     .empty {
       color: var(--muted);
       padding: 28px 8px;
@@ -813,6 +834,23 @@
     </form>
   </dialog>
 
+  <dialog id="sess-dlg" class="wide" aria-labelledby="sess-title">
+    <div class="dlg-card">
+      <div class="json-head">
+        <div>
+          <h3 id="sess-title">登录会话</h3>
+          <p class="dlg-lead" id="sess-sub">与 cursor.com 设置页「Active Sessions」一致。撤销由服务端异步生效，可能延迟几分钟。</p>
+        </div>
+        <div class="acct-tools">
+          <button type="button" class="icon-btn" id="sess-reload" title="重新拉取" aria-label="重新拉取"></button>
+          <button type="button" class="icon-btn" id="sess-close" title="关闭" aria-label="关闭"></button>
+        </div>
+      </div>
+      <div class="sess-list" id="sess-list"></div>
+      <div class="msg" id="sess-msg" aria-live="polite"></div>
+    </div>
+  </dialog>
+
   <script>
     const $ = (id) => document.getElementById(id);
     let fileText = "";
@@ -847,6 +885,18 @@
         "M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1",
       ],
       x: ["M18 6 6 18", "M6 6l12 12"],
+      devices: [
+        "M4 5h12a2 2 0 0 1 2 2v3",
+        "M2 17h12",
+        "M4 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7",
+        "M18 12h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z",
+      ],
+    };
+    const SESSION_KIND = {
+      SESSION_TYPE_WEB: "Web",
+      SESSION_TYPE_CLIENT: "Desktop App",
+      SESSION_TYPE_MOBILE: "Mobile",
+      SESSION_TYPE_CHROME_EXTENSION: "Chrome 扩展",
     };
     const TOOL_MARKS = {
       "claude-code": "Claude Code",
@@ -1165,6 +1215,11 @@
       jsonBtn.onclick = () => openJson(a);
       tools.appendChild(refreshBtn);
       tools.appendChild(jsonBtn);
+      if (a.stored || a.from_ide) {
+        const sessBtn = iconBtn("devices", "登录会话");
+        sessBtn.onclick = () => openSessions(a);
+        tools.appendChild(sessBtn);
+      }
       head.appendChild(tools);
       top.appendChild(head);
       const chips = el("div", "chips");
@@ -1265,6 +1320,7 @@
           try {
             await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
             if (jsonHash === a.account_hash) closeJson();
+            if (sessHash === a.account_hash) closeSessions();
             setMsg("acct-msg", "已删除", "ok");
             refresh();
           } catch (e) { setMsg("acct-msg", e.message, "err"); }
@@ -1577,6 +1633,113 @@
       jsonHash = null;
       if ($("json-dlg").open) $("json-dlg").close();
     }
+    let sessHash = null;
+    let sessLabel = "";
+    function fmtSessTime(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return String(iso).slice(0, 10);
+      const pad = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+    function renderSessions(list) {
+      const box = $("sess-list");
+      box.textContent = "";
+      if (!list.length) {
+        box.appendChild(el("div", "sess-empty", "没有活动会话"));
+        return;
+      }
+      const sorted = list.slice().sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
+      sorted.forEach((s) => {
+        const row = el("div", "sess-row" + (s.current ? " cur" : ""));
+        const main = el("div", "sess-main");
+        const kind = el("div", "sess-kind", SESSION_KIND[s.session_type] || s.session_type || "未知");
+        if (s.current) {
+          const c = el("span", "chip on", "本采集端使用中");
+          c.title = "采集端存的凭证就是这条会话；撤销后本账号采集会立刻失效";
+          kind.appendChild(c);
+        }
+        main.appendChild(kind);
+        const sid = el("div", "sess-id", String(s.session_id).slice(0, 16) + "…");
+        sid.title = s.session_id;
+        main.appendChild(sid);
+        row.appendChild(main);
+        const time = el("div", "sess-time");
+        time.appendChild(el("div", "", "创建 " + fmtSessTime(s.created_at)));
+        if (s.expires_at) time.appendChild(el("div", "", "到期 " + fmtSessTime(s.expires_at)));
+        row.appendChild(time);
+        const btn = el("button", "btn danger mini", "撤销");
+        btn.type = "button";
+        if (s.type_code == null) {
+          btn.disabled = true;
+          btn.title = "未知会话类型，无法撤销";
+        }
+        btn.onclick = async () => {
+          const who = SESSION_KIND[s.session_type] || s.session_type;
+          const warn = s.current
+            ? "这是本采集端正在使用的会话。撤销后 " + sessLabel + " 的采集会立刻 401，需重新导入凭证。仍要撤销？"
+            : "撤销 " + who + " 会话（创建于 " + fmtSessTime(s.created_at) + "）？对应设备会被登出。";
+          const yes = await confirmDlg(warn, "撤销");
+          if (!yes) return;
+          btn.disabled = true;
+          setMsg("sess-msg", "正在撤销…");
+          try {
+            await api("/v1/cursor/accounts/" + encodeURIComponent(sessHash) + "/sessions/revoke", {
+              method: "POST",
+              body: JSON.stringify({ session_id: s.session_id, type: s.session_type }),
+            });
+            setMsg("sess-msg", "已提交撤销，服务端可能需要几分钟生效", "ok");
+            await loadSessions();
+          } catch (e) {
+            btn.disabled = false;
+            setMsg("sess-msg", e.message, "err");
+          }
+        };
+        row.appendChild(btn);
+        box.appendChild(row);
+      });
+    }
+    async function loadSessions() {
+      if (!sessHash) return;
+      const hash = sessHash;
+      $("sess-reload").classList.add("spin");
+      $("sess-reload").disabled = true;
+      try {
+        const r = await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/sessions");
+        if (sessHash !== hash) return;
+        renderSessions(r.sessions || []);
+      } catch (e) {
+        if (sessHash !== hash) return;
+        $("sess-list").textContent = "";
+        setMsg("sess-msg", e.message, "err");
+      } finally {
+        $("sess-reload").classList.remove("spin");
+        $("sess-reload").disabled = false;
+      }
+    }
+    function openSessions(a) {
+      sessHash = a.account_hash;
+      sessLabel = a.account_label || a.account_hash;
+      $("sess-title").textContent = "登录会话 · " + sessLabel;
+      $("sess-list").textContent = "";
+      $("sess-list").appendChild(el("div", "sess-empty", "正在拉取…"));
+      setMsg("sess-msg", "");
+      $("sess-dlg").showModal();
+      loadSessions();
+    }
+    function closeSessions() {
+      sessHash = null;
+      if ($("sess-dlg").open) $("sess-dlg").close();
+    }
+    $("sess-close").appendChild(svgIcon(ICONS.x));
+    $("sess-close").onclick = closeSessions;
+    $("sess-reload").appendChild(svgIcon(ICONS.refresh));
+    $("sess-reload").onclick = () => loadSessions();
+    $("sess-dlg").addEventListener("click", (e) => {
+      if (e.target === $("sess-dlg")) closeSessions();
+    });
+    $("sess-dlg").addEventListener("close", () => { sessHash = null; });
+
     let sinceHash = null;
     function openSinceDlg(a) {
       sinceHash = a.account_hash;

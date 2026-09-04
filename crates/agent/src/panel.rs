@@ -10,8 +10,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use ai_usage_parsers::{
-    fetch_plan_with_raw, read_ide_cursor_auth, AdapterEnv, CursorAccountSnapshot,
-    CursorTokenPreview, ParseCtx, PlanFetchError,
+    fetch_plan_with_raw, fetch_sessions, read_ide_cursor_auth, revoke_session, AdapterEnv,
+    CursorAccountSnapshot, CursorSession, CursorTokenPreview, ParseCtx, PlanFetchError,
 };
 
 use crate::config::{self, AgentConfig, Destination};
@@ -446,6 +446,20 @@ fn dispatch(
                 Err(err) => json_err(400, &err.to_string()),
             }
         }
+        (m, p) if m == "GET" && account_subpath(p, "/sessions").is_some() => {
+            let hash = account_subpath(p, "/sessions").expect("matched");
+            match list_account_sessions(state, &hash) {
+                Ok(sessions) => json_ok(serde_json::json!({ "sessions": sessions })),
+                Err(err) => session_err(err),
+            }
+        }
+        (m, p) if m == "POST" && account_subpath(p, "/sessions/revoke").is_some() => {
+            let hash = account_subpath(p, "/sessions/revoke").expect("matched");
+            match post_revoke_session(state, &hash, body) {
+                Ok(()) => json_ok(serde_json::json!({"ok": true})),
+                Err(err) => session_err(err),
+            }
+        }
         (m, p) if m == "DELETE" && p.starts_with("/v1/cursor/accounts/") => {
             let hash = p.trim_start_matches("/v1/cursor/accounts/");
             let hash = percent_decode(hash);
@@ -868,6 +882,82 @@ fn post_report_since(state: &PanelState, hash: &str, body: &[u8]) -> Result<bool
         });
     }
     Ok(found)
+}
+
+/// `/v1/cursor/accounts/{hash}{suffix}` → hash；hash 内不允许再有 `/`。
+fn account_subpath(path: &str, suffix: &str) -> Option<String> {
+    let rest = path.strip_prefix("/v1/cursor/accounts/")?;
+    let hash = rest.strip_suffix(suffix)?;
+    if hash.is_empty() || hash.contains('/') {
+        return None;
+    }
+    Some(percent_decode(hash))
+}
+
+/// 会话接口的错误：账号不存在 404、凭证问题 401、其余上游问题 502。
+#[derive(Debug)]
+enum SessionError {
+    NoAccount,
+    BadRequest(String),
+    Upstream(PlanFetchError),
+}
+
+fn session_err(err: SessionError) -> (u16, &'static str, Vec<u8>) {
+    match err {
+        SessionError::NoAccount => json_err(404, "账号不存在"),
+        SessionError::BadRequest(msg) => json_err(400, &msg),
+        SessionError::Upstream(PlanFetchError::Token | PlanFetchError::Auth) => {
+            json_err(401, plan_err_msg(PlanFetchError::Auth))
+        }
+        SessionError::Upstream(e) => json_err(502, plan_err_msg(e)),
+    }
+}
+
+fn account_token_or_404(state: &PanelState, hash: &str) -> Result<String, SessionError> {
+    let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
+    let ide = read_ide_cursor_auth(&parse_ctx(&state.data_dir));
+    account_token(&extras, ide.as_ref(), hash).ok_or(SessionError::NoAccount)
+}
+
+/// 账号当前全部登录会话。测试环境不出网，返回空列表。
+fn list_account_sessions(
+    state: &PanelState,
+    hash: &str,
+) -> Result<Vec<CursorSession>, SessionError> {
+    let token = account_token_or_404(state, hash)?;
+    if cfg!(test) {
+        return Ok(Vec::new());
+    }
+    fetch_sessions(&token).map_err(SessionError::Upstream)
+}
+
+#[derive(Deserialize)]
+struct RevokeBody {
+    session_id: String,
+    #[serde(rename = "type")]
+    session_type: String,
+}
+
+/// 撤销一条会话。撤销采集端自己那条会让后续采集 401，前端二次确认，
+/// 这里不拦——用户可能就是要下线这台机器。
+fn post_revoke_session(state: &PanelState, hash: &str, body: &[u8]) -> Result<(), SessionError> {
+    let token = account_token_or_404(state, hash)?;
+    let req: RevokeBody = serde_json::from_slice(body)
+        .map_err(|_| SessionError::BadRequest("需要 session_id 与 type".into()))?;
+    let sid = req.session_id.trim();
+    if sid.is_empty() || sid.len() > 128 || !sid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(SessionError::BadRequest("session_id 无效".into()));
+    }
+    if ai_usage_parsers::session_type_code(&req.session_type).is_none() {
+        return Err(SessionError::BadRequest(format!(
+            "不支持的会话类型 {}",
+            req.session_type
+        )));
+    }
+    if cfg!(test) {
+        return Ok(());
+    }
+    revoke_session(&token, sid, &req.session_type).map_err(SessionError::Upstream)
 }
 
 fn refresh_account_plan(state: &PanelState, hash: &str) -> Result<()> {
@@ -1419,6 +1509,62 @@ mod tests {
             .unwrap();
         let path = format!("/v1/cursor/accounts/{hash}/refresh");
         let (st, _, out) = dispatch(&state, "POST", &path, b"");
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn sessions_routes_validate_account_and_body() {
+        let (_dir, state) = setup();
+        let (st, _, _) = dispatch(&state, "GET", "/v1/cursor/accounts/nope/sessions", b"");
+        assert_eq!(st, 404);
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts/nope/sessions/revoke",
+            b"{}",
+        );
+        assert_eq!(st, 404);
+
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let hash = status["cursor_accounts"][0]["account_hash"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let (st, _, out) = dispatch(
+            &state,
+            "GET",
+            &format!("/v1/cursor/accounts/{hash}/sessions"),
+            b"",
+        );
+        assert_eq!(st, 200);
+        let out: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(out["sessions"].as_array().unwrap().is_empty());
+
+        let revoke = format!("/v1/cursor/accounts/{hash}/sessions/revoke");
+        let post = |body: &serde_json::Value| {
+            dispatch(&state, "POST", &revoke, &serde_json::to_vec(body).unwrap())
+        };
+        let (st, _, _) = dispatch(&state, "POST", &revoke, b"not json");
+        assert_eq!(st, 400);
+        let (st, _, _) =
+            post(&serde_json::json!({ "session_id": "../x", "type": "SESSION_TYPE_WEB" }));
+        assert_eq!(st, 400);
+        let (st, _, _) =
+            post(&serde_json::json!({ "session_id": "abc123", "type": "SESSION_TYPE_FUTURE" }));
+        assert_eq!(st, 400);
+        let (st, _, out) =
+            post(&serde_json::json!({ "session_id": "abc123", "type": "SESSION_TYPE_CLIENT" }));
         assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
     }
 

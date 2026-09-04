@@ -130,11 +130,7 @@ pub fn fetch_plan_with_raw(
 ) -> Result<(CursorAccountSnapshot, serde_json::Value), PlanFetchError> {
     let jwt = extract_cursor_jwt(access_token).ok_or(PlanFetchError::Token)?;
     let claims = jwt::decode_claims(&jwt).ok_or(PlanFetchError::Token)?;
-    let raw = remote::fetch_usage_summary(&claims.sub, &jwt).map_err(|err| match err {
-        remote::FetchError::Auth => PlanFetchError::Auth,
-        remote::FetchError::Network => PlanFetchError::Network,
-        remote::FetchError::Status => PlanFetchError::Status,
-    })?;
+    let raw = remote::fetch_usage_summary(&claims.sub, &jwt).map_err(map_fetch_err)?;
     let mut v: serde_json::Value = serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)?;
     let mut snap = snapshot_from_usage_json(&v);
     if claims.token_type.as_deref() != Some("web") {
@@ -148,6 +144,103 @@ pub fn fetch_plan_with_raw(
         }
     }
     Ok((snap, v))
+}
+
+fn map_fetch_err(err: remote::FetchError) -> PlanFetchError {
+    match err {
+        remote::FetchError::Auth => PlanFetchError::Auth,
+        remote::FetchError::Network => PlanFetchError::Network,
+        remote::FetchError::Status => PlanFetchError::Status,
+    }
+}
+
+/// 账号的一条登录会话（`GET /api/auth/sessions`）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CursorSession {
+    pub session_id: String,
+    /// 服务端枚举名：`SESSION_TYPE_WEB` / `SESSION_TYPE_CLIENT` / …
+    pub session_type: String,
+    /// 撤销接口要的数字枚举；未知类型为 None（不可撤销）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_code: Option<u32>,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// 这条就是采集端正在用的凭证：JWT `time` 声明与 `createdAt` 同秒。
+    pub current: bool,
+}
+
+/// 前端 `authSessionTypeRevokeValue` 的映射。
+pub fn session_type_code(session_type: &str) -> Option<u32> {
+    match session_type {
+        "SESSION_TYPE_WEB" => Some(1),
+        "SESSION_TYPE_CLIENT" => Some(2),
+        "SESSION_TYPE_MOBILE" => Some(10),
+        "SESSION_TYPE_CHROME_EXTENSION" => Some(11),
+        _ => None,
+    }
+}
+
+/// 拉取账号全部登录会话，并标出采集端自己那条。
+pub fn fetch_sessions(access_token: &str) -> Result<Vec<CursorSession>, PlanFetchError> {
+    let jwt = extract_cursor_jwt(access_token).ok_or(PlanFetchError::Token)?;
+    let claims = jwt::decode_claims(&jwt).ok_or(PlanFetchError::Token)?;
+    let raw = remote::fetch_sessions(&claims.sub, &jwt).map_err(map_fetch_err)?;
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)?;
+    Ok(sessions_from_json(&v, claims.issued_at))
+}
+
+fn sessions_from_json(v: &serde_json::Value, issued_at: Option<i64>) -> Vec<CursorSession> {
+    let Some(items) = v.get("sessions").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|s| {
+            let obj = s.as_object()?;
+            let session_id = obj.get("sessionId")?.as_str()?.to_string();
+            let session_type = obj
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let created_at = obj
+                .get("createdAt")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let expires_at = obj
+                .get("expiresAt")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let current = match (issued_at, chrono::DateTime::parse_from_rfc3339(&created_at)) {
+                (Some(t), Ok(dt)) => dt.timestamp() == t,
+                _ => false,
+            };
+            Some(CursorSession {
+                type_code: session_type_code(&session_type),
+                session_id,
+                session_type,
+                created_at,
+                expires_at,
+                current,
+            })
+        })
+        .collect()
+}
+
+/// 撤销一条会话。`session_type` 传服务端枚举名。
+pub fn revoke_session(
+    access_token: &str,
+    session_id: &str,
+    session_type: &str,
+) -> Result<(), PlanFetchError> {
+    let jwt = extract_cursor_jwt(access_token).ok_or(PlanFetchError::Token)?;
+    let claims = jwt::decode_claims(&jwt).ok_or(PlanFetchError::Token)?;
+    let code = session_type_code(session_type).ok_or(PlanFetchError::Parse)?;
+    remote::revoke_session(&claims.sub, &jwt, session_id, code)
+        .map(|_| ())
+        .map_err(map_fetch_err)
 }
 
 impl UsageAdapter for CursorAdapter {
@@ -320,6 +413,38 @@ mod tests {
     fn plan_fetch_rejects_garbage_token() {
         assert_eq!(fetch_plan_with_raw("nope").unwrap_err(), PlanFetchError::Token);
         assert!(fetch_plan_snapshot("nope").is_none());
+    }
+
+    #[test]
+    fn sessions_json_marks_current_by_issued_at() {
+        let v = serde_json::json!({"sessions": [
+            {"sessionId":"aaa","type":"SESSION_TYPE_WEB","createdAt":"2026-08-21T12:22:57.000Z","expiresAt":"2026-10-20T12:22:57.000Z"},
+            {"sessionId":"bbb","type":"SESSION_TYPE_CLIENT","createdAt":"2026-09-03T09:46:13.000Z","expiresAt":"2026-11-02T09:46:13.000Z"},
+            {"sessionId":"ccc","type":"SESSION_TYPE_FUTURE","createdAt":"2026-09-03T10:00:00.000Z"}
+        ]});
+        let out = sessions_from_json(&v, Some(1788428773));
+        assert_eq!(out.len(), 3);
+        assert!(!out[0].current);
+        assert_eq!(out[0].type_code, Some(1));
+        assert!(out[1].current);
+        assert_eq!(out[1].type_code, Some(2));
+        assert_eq!(out[2].type_code, None);
+        assert!(out[2].expires_at.is_none());
+        assert!(sessions_from_json(&v, None).iter().all(|s| !s.current));
+        assert!(sessions_from_json(&serde_json::json!({}), None).is_empty());
+    }
+
+    #[test]
+    fn revoke_rejects_unknown_type_without_network() {
+        let token = jwt::fake_jwt("user_r", "r@x.com");
+        assert_eq!(
+            revoke_session(&token, "abc", "SESSION_TYPE_FUTURE").unwrap_err(),
+            PlanFetchError::Parse
+        );
+        assert_eq!(
+            revoke_session("nope", "abc", "SESSION_TYPE_WEB").unwrap_err(),
+            PlanFetchError::Token
+        );
     }
 
     #[test]

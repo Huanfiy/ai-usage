@@ -3,6 +3,8 @@ use std::time::Duration;
 const DEFAULT_BASE: &str = "https://cursor.com";
 const EXPORT_PATH: &str = "/api/dashboard/export-usage-events-csv?strategy=tokens";
 const SUMMARY_PATH: &str = "/api/usage-summary";
+const SESSIONS_PATH: &str = "/api/auth/sessions";
+const SESSIONS_REVOKE_PATH: &str = "/api/auth/sessions/revoke";
 const SESSION_COOKIE: &str = "WorkosCursorSessionToken";
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
 const TIMEOUT_SECS: u64 = 20;
@@ -35,6 +37,38 @@ pub fn fetch_usage_summary(sub: &str, jwt: &str) -> Result<String, FetchError> {
             &summary_url(),
             cookie,
             "application/json",
+            SUMMARY_TIMEOUT_SECS,
+        )
+    })
+}
+
+/// `GET /api/auth/sessions`：账号当前全部登录会话（Web / Desktop / …）。
+pub fn fetch_sessions(sub: &str, jwt: &str) -> Result<String, FetchError> {
+    fetch_with_cookies(sub, jwt, |cookie| {
+        get_body(
+            &web_url(SESSIONS_PATH),
+            cookie,
+            "application/json",
+            SUMMARY_TIMEOUT_SECS,
+        )
+    })
+}
+
+/// `POST /api/auth/sessions/revoke`。`type_code` 为服务端枚举数字
+/// （WEB=1 / CLIENT=2 / MOBILE=10 / CHROME_EXTENSION=11），不是字符串。
+/// 服务端异步失效，撤销后短时间内该会话可能仍可用。
+pub fn revoke_session(
+    sub: &str,
+    jwt: &str,
+    session_id: &str,
+    type_code: u32,
+) -> Result<String, FetchError> {
+    let body = serde_json::json!({ "session_id": session_id, "type": type_code }).to_string();
+    fetch_with_cookies(sub, jwt, |cookie| {
+        post_json(
+            &web_url(SESSIONS_REVOKE_PATH),
+            cookie,
+            &body,
             SUMMARY_TIMEOUT_SECS,
         )
     })
@@ -91,11 +125,15 @@ fn fetch_with_cookies(
 }
 
 fn export_url() -> String {
-    format!("{}{EXPORT_PATH}", web_base())
+    web_url(EXPORT_PATH)
 }
 
 fn summary_url() -> String {
-    format!("{}{SUMMARY_PATH}", web_base())
+    web_url(SUMMARY_PATH)
+}
+
+fn web_url(path: &str) -> String {
+    format!("{}{path}", web_base())
 }
 
 fn web_base() -> String {
@@ -143,6 +181,28 @@ fn get_body(
         .set("User-Agent", UA)
         .timeout(Duration::from_secs(timeout_secs))
         .call();
+    map_response(resp)
+}
+
+fn post_json(
+    url: &str,
+    cookie_value: &str,
+    body: &str,
+    timeout_secs: u64,
+) -> Result<String, FetchError> {
+    let resp = ureq::post(url)
+        .set("Cookie", &format!("{SESSION_COOKIE}={cookie_value}"))
+        .set("Accept", "application/json")
+        .set("Content-Type", "application/json")
+        .set("Origin", DEFAULT_BASE)
+        .set("Referer", "https://cursor.com/dashboard/settings")
+        .set("User-Agent", UA)
+        .timeout(Duration::from_secs(timeout_secs))
+        .send_string(body);
+    map_response(resp)
+}
+
+fn map_response(resp: Result<ureq::Response, ureq::Error>) -> Result<String, FetchError> {
     match resp {
         Ok(resp) => resp.into_string().map_err(|_| FetchError::Network),
         Err(ureq::Error::Status(code, _)) if code == 401 || code == 403 => Err(FetchError::Auth),
