@@ -64,7 +64,7 @@ mindmap
 两条轨道用途不同：
 
 - **Bucket**（30 min 窗）：费用与趋势的计量单元。维度为 `source × model × project × bucket_start`。`cache_read` 与 `cache_creation` 必须分字段——Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，合并入库后费用无法回补。无 `cache_creation` 概念的源（如 Codex）该字段为 0。
-- **Session**：活跃度与明细列表。时间、条数与 token 分项（与 Bucket 五项同口径），没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。Cursor 无 session。Codex fork / sub-agent 仍出条目，token 为 0。
+- **Session**：活跃度与明细列表。时间、条数与 token 分项（与 Bucket 五项同口径），没有正文。`project` 仅为目录名；采集端可关闭上传，看板也可强制显示为 `unknown`。Cursor 无 session。Codex fork / sub-agent、Pi 派生会话仍出条目，token 为 0。
 - **Cursor 账号套餐快照**（`cursor_accounts`，additive 可选字段，schema_version 仍为 1）：agent 在 Cursor 档同步时对每个已加入账号拉 `usage-summary`、Bot/Sand 配额与信用余额（credit grants），归一化成数字（API / Auto / Bot 百分比、已用/额度、账期、重置时刻、信用余额剩余/总额/到期、`fetched_at`）随 ingest 上报，不含凭证与原始响应；web 型凭证调不了原生 RPC，Bot 字段留空。dash 按 `account_hash` 只存最新一份（`fetched_at` 新者胜，多机上报自动收敛），在独立的 Cursor 页展示，不参与费用与趋势。Cursor 的 token 桶另有每账号「统计起始」固定 cutoff（默认加入时刻，可改全部历史），避免全量 CSV 过统计。
 
 幂等按主机隔离（`host_id` 由服务端 token 映射，不取自 payload）：
@@ -90,7 +90,7 @@ mindmap
 
 ```mermaid
 flowchart LR
-  logs[Claude / Codex / Grok 日志] -->|只读| parse[本机解析]
+  logs[Claude / Codex / Grok / Pi 日志] -->|只读| parse[本机解析]
   cursor[Cursor：已加入账号的 CSV] -->|只读| parse
   parse --> norm[Bucket + Session]
   norm --> diff{相对本地 state<br/>content-hash}
@@ -174,7 +174,7 @@ flowchart TB
 
 ## 本阶段范围
 
-已接入的采集源：Claude Code、Codex、Grok、Cursor。各源扫描根、计入与明确不计见 [parser-boundaries.md](parser-boundaries.md)。某一源失败不影响其它源。
+已接入的采集源：Claude Code、Codex、Grok、Pi、Cursor。各源扫描根、计入与明确不计见 [parser-boundaries.md](parser-boundaries.md)。某一源失败不影响其它源。
 
 明确不做：
 - 排行榜、设备码浏览器登录、往各工具写 `SKILL.md`

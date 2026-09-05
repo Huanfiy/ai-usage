@@ -4,6 +4,7 @@ mod claude;
 mod codex;
 mod cursor;
 mod grok;
+mod pi;
 mod util;
 
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ pub use cursor::{
     CursorAdapter, CursorSession, CursorTokenPreview, PlanFetchError, CURSOR_NOT_ENROLLED,
 };
 pub use grok::GrokAdapter;
+pub use pi::PiAdapter;
 
 #[derive(Debug, Clone, Default)]
 pub struct CursorExtraAccount {
@@ -37,6 +39,8 @@ pub struct AdapterEnv {
     pub codex_home: Option<PathBuf>,
     pub extra_codex_home: Option<PathBuf>,
     pub grok_home: Option<PathBuf>,
+    pub pi_agent_dir: Option<PathBuf>,
+    pub pi_session_dir: Option<PathBuf>,
     pub cursor_state_db: Option<PathBuf>,
     pub cursor_extra_accounts: Vec<CursorExtraAccount>,
 }
@@ -80,6 +84,7 @@ pub fn default_adapters() -> Vec<Box<dyn UsageAdapter>> {
         Box::new(ClaudeCodeAdapter),
         Box::new(CodexAdapter),
         Box::new(GrokAdapter),
+        Box::new(PiAdapter),
         Box::new(CursorAdapter),
     ]
 }

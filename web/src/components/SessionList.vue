@@ -50,7 +50,7 @@ const COL_TIPS: {
     key: 'tokens',
     label: 'Token',
     title: 'Token',
-    body: '本会话五项合计。单元格可再悬停看数量。Codex 子会话可能为 0。',
+    body: '本会话五项合计。单元格可再悬停看数量。Codex / Grok 子会话、Pi 派生会话或排除来源的会话可能为 0。',
     end: true,
     parts: true,
   },

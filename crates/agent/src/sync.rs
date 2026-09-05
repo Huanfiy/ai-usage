@@ -18,11 +18,12 @@ use crate::state::SyncState;
 
 const PARSER_CONCURRENCY: usize = 4;
 
-pub fn local_source_ids() -> [&'static str; 3] {
+pub fn local_source_ids() -> [&'static str; 4] {
     [
         ai_usage_protocol::SOURCE_CLAUDE_CODE,
         ai_usage_protocol::SOURCE_CODEX,
         ai_usage_protocol::SOURCE_GROK,
+        ai_usage_protocol::SOURCE_PI,
     ]
 }
 
@@ -679,6 +680,28 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::config::AgentConfig;
+
+    #[test]
+    fn local_tier_includes_pi_and_all_registered_machine_sources() {
+        let local = local_source_ids();
+        let adapters: Vec<_> = default_adapters()
+            .into_iter()
+            .filter(|a| a.id() != SOURCE_CURSOR)
+            .collect();
+        let ids: Vec<_> = adapters.iter().map(|a| a.id()).collect();
+        assert_eq!(local.as_slice(), ids.as_slice());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/home");
+        let mut ctx = ParseCtx::new(home, tmp.path().to_path_buf());
+        ctx.env.pi_session_dir = Some(ctx.home.join(".pi/agent/sessions"));
+        let parsed = parse_adapters(&ctx, &adapters, PARSER_CONCURRENCY);
+        let (_, pi) = parsed.iter().find(|(id, _)| id == "pi").unwrap();
+        assert!(!pi.skipped);
+        assert!(pi.warnings.is_empty(), "{:?}", pi.warnings);
+        assert_eq!(pi.buckets.len(), 3);
+        assert_eq!(pi.sessions.len(), 2);
+    }
 
     #[test]
     fn dest_jobs_for_url_filters() {

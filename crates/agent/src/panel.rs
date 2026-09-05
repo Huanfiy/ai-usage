@@ -23,6 +23,7 @@ const ICON_FAVICON: &[u8] = include_bytes!("panel-icons/favicon.svg");
 const ICON_CLAUDE_CODE: &[u8] = include_bytes!("panel-icons/claude-code.svg");
 const ICON_CODEX: &[u8] = include_bytes!("panel-icons/codex.svg");
 const ICON_GROK: &[u8] = include_bytes!("panel-icons/grok.svg");
+const ICON_PI: &[u8] = include_bytes!("panel-icons/pi.svg");
 const ICON_CURSOR: &[u8] = include_bytes!("panel-icons/cursor.svg");
 const MAX_BODY: usize = 2 * 1024 * 1024;
 const MAX_HEADERS: usize = 8 * 1024;
@@ -414,6 +415,7 @@ fn dispatch(
         ("GET", "/icons/claude-code.svg") => svg_ok(ICON_CLAUDE_CODE),
         ("GET", "/icons/codex.svg") => svg_ok(ICON_CODEX),
         ("GET", "/icons/grok.svg") => svg_ok(ICON_GROK),
+        ("GET", "/icons/pi.svg") => svg_ok(ICON_PI),
         ("GET", "/icons/cursor.svg") => svg_ok(ICON_CURSOR),
         ("GET", "/v1/status") => json_ok(status_payload(state)),
         ("PUT", "/v1/config") => match put_config(state, body) {
@@ -1352,9 +1354,9 @@ mod tests {
     }
 
     #[test]
-    fn serves_official_tool_icons() {
+    fn serves_tool_icons() {
         let (_dir, state) = setup();
-        for name in ["claude-code", "codex", "grok", "cursor"] {
+        for name in ai_usage_protocol::KNOWN_SOURCES {
             let path = format!("/icons/{name}.svg");
             let (st, ct, body) = dispatch(&state, "GET", &path, b"");
             assert_eq!(st, 200, "{path}");

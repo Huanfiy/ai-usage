@@ -14,7 +14,9 @@ fn fixture_home() -> PathBuf {
 }
 
 fn fixture_ctx(tmp: &tempfile::TempDir) -> ParseCtx {
-    ParseCtx::new(fixture_home(), tmp.path().to_path_buf())
+    let mut ctx = ParseCtx::new(fixture_home(), tmp.path().to_path_buf());
+    ctx.env.pi_session_dir = Some(ctx.home.join(".pi/agent/sessions"));
+    ctx
 }
 
 #[test]
@@ -159,7 +161,7 @@ fn parse_all_runs_registered_adapters() {
     let ctx = fixture_ctx(&tmp);
     let results = parse_all(&ctx, 4);
     let ids: Vec<_> = results.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["claude-code", "codex", "grok", "cursor"]);
+    assert_eq!(ids, ["claude-code", "codex", "grok", "pi", "cursor"]);
     let buckets: i64 = results
         .iter()
         .map(|(_, r)| r.buckets.iter().map(|b| b.total_tokens).sum::<i64>())

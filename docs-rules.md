@@ -34,7 +34,7 @@ ingest 契约以 `crates/protocol` 源码为单一事实源，不另建 `docs/pr
 ## 4. 不记录清单
 
 - 一次性 implementation plan：实现合入后，过程信息由 git log 承载，plan 本身不入库。
-- AI 工具目录（`.claude/`、`.cursor/`、`.codex/`、`.agents/`、`.gemini/` 等）：属个人开发环境配置，一律不入库，统一由 `.gitignore` 根锚点（`/.cursor/` 等）隔离。例外：`fixtures/home/.claude`、`fixtures/home/.codex`、`fixtures/home/.grok` 是解析器测试夹具，必须跟踪；`fixtures/cursor/` 是合成 CSV 夹具，必须跟踪。
+- AI 工具目录（`.claude/`、`.cursor/`、`.codex/`、`.agents/`、`.gemini/` 等）：属个人开发环境配置，一律不入库，统一由 `.gitignore` 根锚点（`/.cursor/` 等）隔离。例外：`fixtures/home/.claude`、`fixtures/home/.codex`、`fixtures/home/.grok`、`fixtures/home/.pi` 是解析器测试夹具，必须跟踪；`fixtures/cursor/` 是合成 CSV 夹具，必须跟踪。
 - 未决探索草稿（方案对比、推导过程）：留在已隔离位置（AI 工具目录、`tmp/` 等），拍板后按 §3 门槛落档结论。
 - 可推导事实：配置内容不复述进文档（引用文件路径即可），变更历史不复述（git log 即记录）。
 - 过程性对话、试错细节、被否弃的中间方案。

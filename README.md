@@ -35,7 +35,7 @@
 当前发布只提供 **Linux x86_64 musl 静态二进制**，不依赖宿主机 glibc / Node / Python。其它平台尚未提供。
 
 ```bash
-VER=0.3.0
+VER=0.4.0
 BASE=https://github.com/Huanfiy/ai-usage/releases/download/v${VER}
 curl -fLO "${BASE}/ai-usage-${VER}-x86_64-unknown-linux-musl.tar.gz"
 curl -fLO "${BASE}/SHA256SUMS"
@@ -48,7 +48,7 @@ install -m755 "ai-usage-${VER}-x86_64-unknown-linux-musl"/ai-usage-{agent,dash} 
 
 ## 说明
 
-**采集源**：Claude Code、Codex、Grok、Cursor。Cursor 按账号幂等，不按机器累加。计入边界见 [docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。
+**采集源**：Claude Code、Codex、Grok、Pi、Cursor。Cursor 按账号幂等，不按机器累加。计入边界见 [docs/design/parser-boundaries.md](docs/design/parser-boundaries.md)。
 
 **自身文件**：只走 XDG（`~/.config/ai-usage`、`~/.local/share/ai-usage`），可用 `--config` / `--data-dir` 改。不写 `~/.claude`、`~/.codex` 等工具目录。
 
@@ -58,12 +58,14 @@ install -m755 "ai-usage-${VER}-x86_64-unknown-linux-musl"/ai-usage-{agent,dash} 
 
 **多机**：看板部署到一台机器，各宿主机 agent 向外推送。同一采集端可同时向多个看板地址上报。
 
+**升级**：新增采集源时先升级 dash，再升级 agent。旧 dash 会忽略未知来源；若反向升级，升级 dash 后须执行 `ai-usage-agent sync --full` 补报会话。
+
 **开发**：本机入口 `./run.sh`。架构与约束见 [docs/design/architecture.md](docs/design/architecture.md)。
 
 ## 现状与后续
 
 - [x] Linux x86_64 musl 发布
-- [x] Claude Code / Codex / Grok / Cursor
+- [x] Claude Code / Codex / Grok / Pi / Cursor
 - [ ] macOS / Windows / aarch64 发布
 - [ ] 贡献指南与 Issue 模板
 - [ ] SECURITY.md

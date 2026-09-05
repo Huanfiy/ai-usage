@@ -20,7 +20,7 @@
 
 `cache_read` 与 `cache_creation` 必须分字段保留。Anthropic `cache_creation` 约基价 1.25×、`cache_read` 约 0.1×，单价差 12.5 倍，折进 `input` 后费用无法回补。Codex 无 `cache_creation`，该字段为 0。`total_tokens` 为五项之和（含 `cache_read` / `cache_creation`）。
 
-桶时间按 UTC 半小时对齐。Claude / Codex / Grok 的主机身份由 ingest token 派生，不进入解析维度。Cursor 是账号级源：解析器带上 `account_hash`，ingest 改写为 `acct:<hash>`。
+桶时间按 UTC 半小时对齐。Claude / Codex / Grok / Pi 的主机身份由 ingest token 派生，不进入解析维度。Cursor 是账号级源：解析器带上 `account_hash`，ingest 改写为 `acct:<hash>`。
 
 ## 已接入源
 
@@ -56,6 +56,22 @@
 
 **不做**：跨文件 replay 拆分（按 fingerprint 对齐父会话、从父用量减去子增量）。与「单文件可解析」冲突。
 
+### Pi（`pi`）
+
+**扫描根**：默认 `~/.pi/agent/sessions/`，递归读取 JSONL；`PI_CODING_AGENT_DIR` 改为该目录下的 `sessions/`，`PI_CODING_AGENT_SESSION_DIR` 直接指定会话目录（优先于前者）。`AdapterEnv` 显式路径优先于进程环境，session 目录优先于 agent 目录。`--session-dir` / `--session` 放在其它位置的日志须给采集端配置对应环境变量；daemon 须在其服务环境设置，不能依赖启动 pi 的终端环境。无落盘的 `--no-session` / SDK 内存会话不计。
+
+**计入**：支持 session format v1–v3。首行 session header 提供 `id` 与 `cwd`，项目只取 cwd 的目录名。同一 session ID 的多份物理文件按体积、mtime 取最完整一份。遍历整个文件（包括 `/tree` 离开的分支和压缩前历史），只从顶层 `message` 的 assistant `usage` 取单次请求用量，直接累加、不做累计 delta。单文件按 entry `id` 去重，保留用量较大者；v1 无 entry ID 时按物理位置区分。时间优先 entry 的 ISO 时间，缺省用 message 的 Unix 毫秒时间。
+
+`input` / `cacheRead` / `cacheWrite` 分别直接映射 input / cache_read / cache_creation，input 不再扣缓存；`reasoning` 是 `output` 的子集，缺省 0，并限制在 `0..output`，从 output 中扣除后分字段保留。`cacheWrite1h` 是 cacheWrite 的子集，不额外相加；`totalTokens` 不参与累加，total 按归一化五项重算。模型优先 `responseModel`，缺省 `model`，不使用当前进程模型标记历史。忽略 `cost`，仍由看板估价。错误 / 中止消息保留已报告的非零 usage，`pending` 不计 token，全零 usage 不出桶。
+
+**摘要**：顶层 `compaction.usage` 与 `branch_summary.usage` 计入，但未携带可靠模型归属，统一记 `model = unknown`，不借用当前模型估价。`tokensBefore` 是上下文大小，不计用量；不递归读取 `retainedTail`、`details` 等历史副本。Session 的消息数、时间只取 user / assistant / toolResult 消息，不将摘要、模型切换或 custom 记录算成对话消息。
+
+**不计 token、仍出 session**：header 的 `parentSession` 非空（fork / clone / 其它派生会话）整文件不计 token，包括派生后新增请求，避免复制历史重复计入。普通会话中 `provider == "cursor-agent"` 的 assistant 消息也不计 token，仍保留会话时间与消息数；该规则不随 Cursor 账号是否启用改变。
+
+**不计**：`toolResult.usage`（可能聚合另行落盘的子 agent 用量）、任意扩展私有统计、正文估算。没有 usage 的请求不猜 token。完整行损坏时跳过并告警，未换行的末尾记录留待下一轮；文件截断、重写或缓存算法变更后重新解析。工具目录始终只读，缓存只落本项目数据目录。
+
+**不做**：跨文件 replay / 子 agent 对齐，不拆分 fork 的复制段与自身增量，不安装 hook，不拦截网络请求；因此不保证与 Pi `/session` 的汇总完全相同。
+
 ### Cursor（`cursor`）
 
 **扫描根**：本机 Cursor user-data 里的 `state.vscdb`（Linux `$XDG_CONFIG_HOME/Cursor/User/globalStorage/state.vscdb` 或 `~/.config/Cursor/…`；macOS Application Support；Windows `%APPDATA%\Cursor`）。可用 `CURSOR_STATE_DB_PATH` 覆盖。有该文件即视为已安装。只读打开，只取 `cursorAuth/accessToken` 与 `cursorAuth/cachedEmail`，禁止拷贝整库，禁止写回。
@@ -82,5 +98,6 @@
 | Claude Desktop Cowork 扫描 | 存在以 Cowork 为主要日志位置的使用者，且扫描范围可限制在可枚举的 app-data 根下 |
 | Grok subagent 不计 token | 父会话 `turn_completed.usage` 不再聚合子用量，跳过子目录会漏计 |
 | Grok `.cwd` | 出现 summary 无 cwd、且 group 目录带 `.cwd` 的真实会话 |
+| Pi 派生会话 / 工具 usage 不计 token | 存在可证明不重复的单文件增量标记或工具用量归属，且这部分成为用量主体 |
 
 重开后删除或改写本节对应行，不另留「已过时」段落。

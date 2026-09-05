@@ -406,6 +406,61 @@ mod tests {
     }
 
     #[test]
+    fn pi_buckets_and_sessions_are_machine_scoped_and_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let mut bucket = sample_bucket(100);
+            bucket.source = ai_usage_protocol::SOURCE_PI.into();
+            bucket.output_tokens = 30;
+            bucket.cache_read_input_tokens = 50;
+            bucket.cache_creation_input_tokens = 20;
+            bucket.reasoning_output_tokens = 10;
+            let session: UsageSession = serde_json::from_value(serde_json::json!({
+                "source": "pi", "project": "demo", "session_hash": "pi-session",
+                "first_message_at": "2026-01-15T10:00:00Z",
+                "last_message_at": "2026-01-15T10:01:00Z",
+                "message_count": 2, "user_message_count": 1,
+                "input_tokens": 100, "output_tokens": 30,
+                "cache_read_input_tokens": 50, "cache_creation_input_tokens": 20,
+                "reasoning_output_tokens": 10
+            }))?;
+            let req = IngestRequest {
+                schema_version: 1,
+                hostname: Some("a".into()),
+                agent_version: None,
+                timezone: None,
+                buckets: vec![bucket],
+                sessions: vec![session],
+                cursor_accounts: vec![],
+            };
+            for _ in 0..2 {
+                let resp = ingest(c, "host1", "a", None, None, req.clone())?;
+                assert_eq!(resp.dropped.buckets, 0);
+                assert!(resp.dropped.unknown_sources.is_empty());
+                assert_eq!(resp.sessions, 1);
+            }
+            for table in ["usage_buckets", "usage_sessions"] {
+                let (rows, tokens, reasoning): (i64, i64, i64) = c.query_row(
+                    &format!("SELECT COUNT(*), SUM(total_tokens), SUM(reasoning_output_tokens) FROM {table} WHERE host_id = 'host1' AND source = 'pi'"),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                assert_eq!((rows, tokens, reasoning), (1, 210, 10));
+            }
+            ingest(c, "host2", "b", None, None, req)?;
+            let hosts: i64 = c.query_row(
+                "SELECT COUNT(DISTINCT host_id) FROM usage_buckets WHERE source = 'pi'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(hosts, 2, "Pi is machine-scoped, not Cursor account-scoped");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn unknown_source_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();

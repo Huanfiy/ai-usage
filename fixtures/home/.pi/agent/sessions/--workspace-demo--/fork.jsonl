@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"pi-fork","timestamp":"2026-01-15T11:00:00Z","cwd":"/workspace/demo","parentSession":"/private/parent/session.jsonl"}
+{"type":"message","id":"u1","timestamp":"2026-01-15T10:00:00Z","message":{"role":"user","content":"synthetic copied history"}}
+{"type":"message","id":"a1","timestamp":"2026-01-15T10:01:00Z","message":{"role":"assistant","provider":"openai","model":"gpt-5.4","usage":{"input":100,"output":40,"cacheRead":200,"cacheWrite":50,"reasoning":10}}}
+{"type":"message","id":"u2","timestamp":"2026-01-15T11:00:00Z","message":{"role":"user","content":"synthetic fork request"}}
+{"type":"message","id":"a2","timestamp":"2026-01-15T11:01:00Z","message":{"role":"assistant","provider":"openai","model":"gpt-5.4","usage":{"input":60,"output":10}}}
+{"type":"compaction","id":"compact","timestamp":"2026-01-15T11:02:00Z","usage":{"input":50,"output":5},"tokensBefore":9000}
