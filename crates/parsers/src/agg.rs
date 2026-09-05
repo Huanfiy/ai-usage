@@ -132,8 +132,17 @@ mod tests {
     #[test]
     fn sums_tokens_per_session_id() {
         let sessions = extract_sessions(
-            &[ev("a", "user", 0), ev("a", "assistant", 1), ev("b", "user", 2)],
-            &[entry("a", 10, 4), entry("a", 2, 1), entry("b", 7, 0), entry("", 99, 99)],
+            &[
+                ev("a", "user", 0),
+                ev("a", "assistant", 1),
+                ev("b", "user", 2),
+            ],
+            &[
+                entry("a", 10, 4),
+                entry("a", 2, 1),
+                entry("b", 7, 0),
+                entry("", 99, 99),
+            ],
         );
         let a = sessions
             .iter()

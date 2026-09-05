@@ -649,15 +649,17 @@ mod tests {
                 |r| r.get(0),
             )?;
             assert_eq!(pct, 20.0);
-            let n: i64 =
-                c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| r.get(0))?;
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| {
+                r.get(0)
+            })?;
             assert_eq!(n, 1);
             // 非法 hash 丢弃
             let mut bad = mk(1.0, "2026-08-29T12:00:00Z");
             bad.account_hash = "not-hex".into();
             send(c, bad);
-            let n: i64 =
-                c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| r.get(0))?;
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM cursor_account_usage", [], |r| {
+                r.get(0)
+            })?;
             assert_eq!(n, 1);
             let rows = crate::db::list_cursor_accounts(c)?;
             assert_eq!(rows.len(), 1);

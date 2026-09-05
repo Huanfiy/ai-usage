@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Versioned ingest schema for ai-usage agent ↔ dash"
+description = "Ingest and join contract for ai-usage agent ↔ dash"
 
 [dependencies]
 chrono.workspace = true

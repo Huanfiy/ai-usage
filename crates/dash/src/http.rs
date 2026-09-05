@@ -1,6 +1,10 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
-use ai_usage_protocol::{hash_token, host_id_from_token, IngestRequest};
+use ai_usage_protocol::{
+    hash_token, host_id_from_token, is_valid_claim_hash, IngestRequest, JoinCreated,
+    JoinPollResponse, JoinRequest, JoinStatus, JOIN_IP_LIMIT, JOIN_PENDING_MAX, JOIN_TTL_SECS,
+};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode, Uri};
@@ -9,7 +13,7 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,6 +29,7 @@ pub struct AppState {
     pub db: Arc<Db>,
     pub pricing: Arc<RwLock<PriceBook>>,
     pub config: DashConfig,
+    pub join_hits: Arc<Mutex<Vec<(String, Instant)>>>,
 }
 
 #[derive(RustEmbed)]
@@ -45,7 +50,12 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/hosts/{host_id}", delete(delete_host))
         .route("/v1/cursor-accounts", get(cursor_accounts))
         .route("/v1/filters", get(filters))
-        .route("/v1/tokens", get(list_tokens).post(create_token))
+        .route("/v1/join", post(create_join))
+        .route("/v1/join/{join_id}", get(poll_join))
+        .route("/v1/joins", get(list_joins))
+        .route("/v1/joins/{join_id}/approve", post(approve_join))
+        .route("/v1/joins/{join_id}/deny", post(deny_join))
+        .route("/v1/tokens", get(list_tokens))
         .route("/v1/tokens/{host_id}", delete(revoke_token))
         .fallback(static_handler)
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -251,45 +261,204 @@ async fn filters(
     Ok(Json(serde_json::to_value(out).unwrap()))
 }
 
-#[derive(Deserialize)]
-struct CreateToken {
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default)]
-    hostname: Option<String>,
-}
-
-async fn create_token(
+async fn create_join(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<CreateToken>,
-) -> Result<Json<Value>, ApiError> {
-    require_ui(&st, &headers)?;
-    let token = new_token();
-    let token_hash = hash_token(&token);
-    let host_id = host_id_from_token(&token);
-    let prefix: String = token.chars().take(12).collect();
-    let hostname = body
-        .hostname
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "unnamed".into());
+    Json(body): Json<JoinRequest>,
+) -> Result<Json<JoinCreated>, ApiError> {
+    let hostname = body.hostname.trim();
+    if hostname.is_empty() {
+        return Err(ApiError::Bad("hostname required".into()));
+    }
+    if !is_valid_claim_hash(&body.claim_hash) {
+        return Err(ApiError::Bad("invalid claim_hash".into()));
+    }
+    if !allow_join_ip(&st, &client_ip(&headers)) {
+        return Err(ApiError::Bad("too many join requests".into()));
+    }
+    let now = Utc::now();
+    let now_s = now.to_rfc3339();
+    let expires_at = (now + chrono::Duration::seconds(JOIN_TTL_SECS as i64)).to_rfc3339();
+    let join_id = random_hex(16);
+    let confirm_pin = format!("{:04}", rand::thread_rng().gen_range(0..10000));
+    let hostname = hostname.to_string();
+    let agent_version = body
+        .agent_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     st.db
         .with(|c| {
-            db::insert_token(
+            db::expire_stale_joins(c, &now_s)?;
+            let n = db::pending_join_count(c, &now_s)?;
+            if n >= JOIN_PENDING_MAX as i64 {
+                anyhow::bail!("too many pending joins");
+            }
+            db::insert_join(
                 c,
-                &token_hash,
-                &host_id,
-                &prefix,
-                body.label.as_deref(),
+                &join_id,
+                &body.claim_hash,
+                &confirm_pin,
                 &hostname,
+                agent_version.as_deref(),
+                &now_s,
+                &expires_at,
             )
         })
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("too many pending") {
+                ApiError::Bad(msg)
+            } else {
+                ApiError::internal(e)
+            }
+        })?;
+    Ok(Json(JoinCreated {
+        join_id,
+        confirm_pin,
+        expires_in: JOIN_TTL_SECS,
+    }))
+}
+
+async fn poll_join(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(join_id): Path<String>,
+) -> Result<Json<JoinPollResponse>, ApiError> {
+    let secret = bearer(&headers).ok_or(ApiError::Unauthorized)?;
+    let claim_hash = hash_token(secret);
+    let now = Utc::now().to_rfc3339();
+    let out = st
+        .db
+        .with(|c| {
+            db::expire_stale_joins(c, &now)?;
+            let row = db::get_join(c, &join_id)?.ok_or_else(|| anyhow::anyhow!("not found"))?;
+            if row.claim_hash != claim_hash {
+                anyhow::bail!("unauthorized");
+            }
+            let resp = match row.status.as_str() {
+                "pending" => JoinPollResponse {
+                    status: JoinStatus::Pending,
+                    token: None,
+                    host_id: None,
+                    confirm_pin: Some(row.confirm_pin),
+                },
+                "approved" => match db::claim_join(c, &join_id)? {
+                    Some((token, host_id)) => JoinPollResponse {
+                        status: JoinStatus::Approved,
+                        token: Some(token),
+                        host_id: Some(host_id),
+                        confirm_pin: None,
+                    },
+                    None => JoinPollResponse {
+                        status: JoinStatus::Expired,
+                        token: None,
+                        host_id: None,
+                        confirm_pin: None,
+                    },
+                },
+                "denied" => JoinPollResponse {
+                    status: JoinStatus::Denied,
+                    token: None,
+                    host_id: None,
+                    confirm_pin: None,
+                },
+                _ => JoinPollResponse {
+                    status: JoinStatus::Expired,
+                    token: None,
+                    host_id: None,
+                    confirm_pin: None,
+                },
+            };
+            Ok(resp)
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg == "unauthorized" {
+                ApiError::Unauthorized
+            } else if msg == "not found" {
+                ApiError::Bad("join not found".into())
+            } else {
+                ApiError::internal(e)
+            }
+        })?;
+    Ok(Json(out))
+}
+
+async fn list_joins(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let now = Utc::now().to_rfc3339();
+    let items = st
+        .db
+        .with(|c| {
+            db::expire_stale_joins(c, &now)?;
+            db::list_pending_joins(c, &now)
+        })
         .map_err(ApiError::internal)?;
-    Ok(Json(json!({
-        "token": token,
-        "host_id": host_id,
-        "token_prefix": prefix,
-    })))
+    Ok(Json(json!({ "items": items })))
+}
+
+async fn approve_join(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(join_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let now = Utc::now().to_rfc3339();
+    st.db
+        .with(|c| {
+            db::expire_stale_joins(c, &now)?;
+            let row = db::get_join(c, &join_id)?.ok_or_else(|| anyhow::anyhow!("not found"))?;
+            if row.status != "pending" {
+                anyhow::bail!("not pending");
+            }
+            if row.expires_at <= now {
+                anyhow::bail!("expired");
+            }
+            let token = new_token();
+            let token_hash = hash_token(&token);
+            let host_id = host_id_from_token(&token);
+            let prefix: String = token.chars().take(12).collect();
+            db::insert_token(c, &token_hash, &host_id, &prefix, None, &row.hostname)?;
+            if !db::approve_join(c, &join_id, &token, &host_id)? {
+                let _ = db::revoke_token(c, &host_id);
+                anyhow::bail!("not pending");
+            }
+            Ok(())
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg == "not found" || msg == "not pending" || msg == "expired" {
+                ApiError::Bad(msg)
+            } else {
+                ApiError::internal(e)
+            }
+        })?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn deny_join(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(join_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let now = Utc::now().to_rfc3339();
+    let ok = st
+        .db
+        .with(|c| {
+            db::expire_stale_joins(c, &now)?;
+            db::deny_join(c, &join_id)
+        })
+        .map_err(ApiError::internal)?;
+    if !ok {
+        return Err(ApiError::Bad("join not found".into()));
+    }
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn list_tokens(
@@ -399,23 +568,36 @@ fn decode_body(headers: &HeaderMap, body: &Bytes) -> Result<Vec<u8>, String> {
 }
 
 pub fn new_token() -> String {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    format!("aiu_{}", hex::encode(bytes))
+    format!("aiu_{}", random_hex(32))
 }
 
-pub fn bootstrap_token_if_empty(db: &Db) -> Result<Option<(String, String)>, anyhow::Error> {
-    db.with(|c| {
-        if db::token_count(c)? > 0 {
-            return Ok(None);
-        }
-        let token = new_token();
-        let hash = hash_token(&token);
-        let host_id = host_id_from_token(&token);
-        let prefix: String = token.chars().take(12).collect();
-        db::insert_token(c, &hash, &host_id, &prefix, Some("local"), "local")?;
-        Ok(Some((token, host_id)))
-    })
+fn random_hex(nbytes: usize) -> String {
+    let mut bytes = vec![0u8; nbytes];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn allow_join_ip(st: &AppState, ip: &str) -> bool {
+    let now = Instant::now();
+    let window = Duration::from_secs(JOIN_TTL_SECS);
+    let mut hits = st.join_hits.lock().expect("join hits");
+    hits.retain(|(_, t)| now.duration_since(*t) < window);
+    if hits.iter().filter(|(k, _)| k == ip).count() >= JOIN_IP_LIMIT {
+        return false;
+    }
+    hits.push((ip.to_string(), now));
+    true
 }
 
 enum ApiError {
@@ -471,8 +653,44 @@ mod tests {
             db: Arc::new(db),
             pricing: Arc::new(RwLock::new(book)),
             config: DashConfig::default(),
+            join_hits: Arc::new(Mutex::new(Vec::new())),
         };
         (router(state), dir)
+    }
+
+    async fn post_json(app: Router, uri: &str, body: Value) -> (StatusCode, Value) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+        (status, body)
+    }
+
+    async fn get_auth(app: Router, uri: &str, bearer: &str) -> (StatusCode, Value) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(json!({}));
+        (status, body)
     }
 
     async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
@@ -528,5 +746,96 @@ mod tests {
         assert_eq!(cells[167]["hour"], 23);
         assert_eq!(cells[0]["tokens"], 0);
         assert!(cells[0]["cost_usd"].is_number());
+    }
+
+    fn join_body(secret: &str) -> Value {
+        json!({
+            "hostname": "box",
+            "agent_version": "0.1.0",
+            "claim_hash": hash_token(secret),
+        })
+    }
+
+    #[tokio::test]
+    async fn join_approve_claim_once() {
+        let (app, _dir) = app();
+        let secret = "claim-secret-one";
+        let (st, created) = post_json(app.clone(), "/v1/join", join_body(secret)).await;
+        assert_eq!(st, StatusCode::OK, "{created}");
+        let join_id = created["join_id"].as_str().unwrap().to_string();
+        let pin = created["confirm_pin"].as_str().unwrap().to_string();
+        assert_eq!(pin.len(), 4);
+        assert_eq!(created["expires_in"], JOIN_TTL_SECS);
+
+        let (st, poll) = get_auth(app.clone(), &format!("/v1/join/{join_id}"), secret).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(poll["status"], "pending");
+        assert_eq!(poll["confirm_pin"], pin);
+
+        let (st, listed) = get_json(app.clone(), "/v1/joins").await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["items"][0]["confirm_pin"], pin);
+
+        let (st, _) = post_json(
+            app.clone(),
+            &format!("/v1/joins/{join_id}/approve"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+
+        let (st, claimed) = get_auth(app.clone(), &format!("/v1/join/{join_id}"), secret).await;
+        assert_eq!(st, StatusCode::OK, "{claimed}");
+        assert_eq!(claimed["status"], "approved");
+        let token = claimed["token"].as_str().unwrap();
+        assert!(token.starts_with("aiu_"));
+        assert!(claimed["host_id"].as_str().unwrap().len() == 32);
+
+        let (st, again) = get_auth(app.clone(), &format!("/v1/join/{join_id}"), secret).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(again["status"], "expired");
+        assert!(again.get("token").is_none() || again["token"].is_null());
+
+        let (st, listed) = get_json(app, "/v1/joins").await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(listed["items"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn join_wrong_secret_is_401() {
+        let (app, _dir) = app();
+        let (st, created) = post_json(app.clone(), "/v1/join", join_body("right")).await;
+        assert_eq!(st, StatusCode::OK);
+        let join_id = created["join_id"].as_str().unwrap();
+        let (st, _) = get_auth(app, &format!("/v1/join/{join_id}"), "wrong").await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn join_deny_then_poll() {
+        let (app, _dir) = app();
+        let secret = "deny-me";
+        let (st, created) = post_json(app.clone(), "/v1/join", join_body(secret)).await;
+        assert_eq!(st, StatusCode::OK);
+        let join_id = created["join_id"].as_str().unwrap();
+        let (st, _) = post_json(app.clone(), &format!("/v1/joins/{join_id}/deny"), json!({})).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, poll) = get_auth(app, &format!("/v1/join/{join_id}"), secret).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(poll["status"], "denied");
+        assert!(poll.get("token").is_none() || poll["token"].is_null());
+    }
+
+    #[tokio::test]
+    async fn join_rejects_bad_claim_hash() {
+        let (app, _dir) = app();
+        let (st, _) = post_json(
+            app,
+            "/v1/join",
+            json!({"hostname": "box", "claim_hash": "nope"}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
     }
 }

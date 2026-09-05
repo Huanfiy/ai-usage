@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api, type HostRow } from '../api'
 import { fmtTime } from '../format'
 
@@ -22,9 +22,17 @@ type TokenItem = {
   hostname: string
 }
 
+type JoinItem = {
+  join_id: string
+  confirm_pin: string
+  hostname: string
+  agent_version: string | null
+  created_at: string
+  expires_at: string
+}
+
 const tokens = ref<TokenItem[]>([])
-const hostname = ref('')
-const newToken = ref('')
+const joins = ref<JoinItem[]>([])
 const err = ref('')
 
 const hostSeen = computed(() => {
@@ -33,21 +41,36 @@ const hostSeen = computed(() => {
   return m
 })
 
-async function loadTokens() {
-  const r = await api.tokens()
+async function load() {
+  const [r, j] = await Promise.all([api.tokens(), api.joins()])
   tokens.value = (r.items ?? []) as TokenItem[]
+  joins.value = (j.items ?? []) as JoinItem[]
 }
 
-onMounted(loadTokens)
+onMounted(() => {
+  void load()
+})
+const poll = setInterval(() => {
+  void load()
+}, 4000)
+onUnmounted(() => clearInterval(poll))
 
-async function createHostToken() {
+async function approve(id: string) {
   err.value = ''
-  const name = hostname.value.trim() || 'unnamed'
   try {
-    const r = await api.createToken(name)
-    newToken.value = r.token
-    hostname.value = ''
-    await loadTokens()
+    await api.approveJoin(id)
+    await load()
+    emit('changed')
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function deny(id: string) {
+  err.value = ''
+  try {
+    await api.denyJoin(id)
+    await load()
     emit('changed')
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
@@ -59,8 +82,7 @@ async function revoke(hostId: string) {
   err.value = ''
   try {
     await api.revokeToken(hostId)
-    if (newToken.value) newToken.value = ''
-    await loadTokens()
+    await load()
     emit('changed')
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
@@ -72,8 +94,7 @@ async function remove(hostId: string) {
   err.value = ''
   try {
     await api.deleteHost(hostId)
-    if (newToken.value) newToken.value = ''
-    await loadTokens()
+    await load()
     emit('changed')
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
@@ -106,6 +127,33 @@ async function remove(hostId: string) {
       </div>
     </section>
 
+    <section class="card" style="margin-bottom: 12px">
+      <h2>待审批接入</h2>
+      <p class="switch-hint" style="margin-top: 0">对照采集端面板上的确认码后批准。本机也需要点一次。</p>
+      <table v-if="joins.length">
+        <thead>
+          <tr>
+            <th>主机名</th>
+            <th>确认码</th>
+            <th>申请时间</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="j in joins" :key="j.join_id">
+            <td>{{ j.hostname }}</td>
+            <td class="mono">{{ j.confirm_pin }}</td>
+            <td>{{ fmtTime(j.created_at) }}</td>
+            <td>
+              <button type="button" class="chip" @click="approve(j.join_id)">批准</button>
+              <button type="button" class="chip" @click="deny(j.join_id)">拒绝</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">没有等待批准的申请</div>
+    </section>
+
     <section class="card">
       <h2>主机接入</h2>
       <table v-if="tokens.length">
@@ -131,12 +179,7 @@ async function remove(hostId: string) {
           </tr>
         </tbody>
       </table>
-      <div v-else class="empty">还没有签发 token</div>
-      <div class="settings">
-        <input v-model="hostname" placeholder="主机显示名" @keydown.enter="createHostToken" />
-        <button type="button" class="chip" @click="createHostToken">新建 ingest token</button>
-        <span v-if="newToken" class="mono">新 token（只显示一次）：{{ newToken }}</span>
-      </div>
+      <div v-else class="empty">还没有已接入的主机</div>
     </section>
   </div>
 </template>

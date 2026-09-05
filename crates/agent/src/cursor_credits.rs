@@ -130,10 +130,8 @@ mod tests {
         assert!(e.has_credit());
         assert_eq!(e.grants.len(), 1);
         assert_eq!(e.remaining_cents, Some(8415));
-        let none = CreditEntry::from_snapshot(
-            &CursorAccountSnapshot::default(),
-            &serde_json::json!({}),
-        );
+        let none =
+            CreditEntry::from_snapshot(&CursorAccountSnapshot::default(), &serde_json::json!({}));
         assert!(!none.has_credit());
         assert!(load(std::path::Path::new("/nonexistent")).is_empty());
     }

@@ -58,19 +58,9 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum TokenCmd {
-    Create {
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long)]
-        hostname: Option<String>,
-    },
     List,
-    Revoke {
-        host_id: String,
-    },
-    Delete {
-        host_id: String,
-    },
+    Revoke { host_id: String },
+    Delete { host_id: String },
 }
 
 #[derive(Subcommand)]
@@ -117,19 +107,11 @@ async fn run() -> Result<()> {
                 cfg.save(&config_path)?;
             }
             let book = PriceBook::load(&data_dir, pricing_override.as_deref())?;
-            if let Some((token, host_id)) = http::bootstrap_token_if_empty(&db)? {
-                println!("已创建本机 ingest token（只显示一次）:");
-                println!("  token:   {token}");
-                println!("  host_id: {host_id}");
-                println!(
-                    "采集端: ai-usage-agent init --url http://{} --token {token}",
-                    cfg.bind
-                );
-            }
             let state = AppState {
                 db: Arc::new(db),
                 pricing: Arc::new(RwLock::new(book)),
                 config: cfg.clone(),
+                join_hits: Arc::new(std::sync::Mutex::new(Vec::new())),
             };
             let app = http::router(state).layer(tower_http::trace::TraceLayer::new_for_http());
             let addr = cfg.bind_addr()?;
@@ -140,24 +122,6 @@ async fn run() -> Result<()> {
                 .await?;
         }
         Commands::Token { cmd } => match cmd {
-            TokenCmd::Create { label, hostname } => {
-                let token = http::new_token();
-                let hash = ai_usage_protocol::hash_token(&token);
-                let host_id = ai_usage_protocol::host_id_from_token(&token);
-                let prefix: String = token.chars().take(12).collect();
-                db.with(|c| {
-                    db::insert_token(
-                        c,
-                        &hash,
-                        &host_id,
-                        &prefix,
-                        label.as_deref(),
-                        hostname.as_deref().unwrap_or("unnamed"),
-                    )
-                })?;
-                println!("token:   {token}");
-                println!("host_id: {host_id}");
-            }
             TokenCmd::List => {
                 let items = db.with(db::list_tokens)?;
                 println!("{}", serde_json::to_string_pretty(&items)?);

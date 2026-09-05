@@ -156,14 +156,24 @@ export const api = {
         hostname: string
       }>
     }>('/v1/tokens'),
-  createToken: async (hostname?: string) => {
-    const r = await fetch('/v1/tokens', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ hostname: hostname || 'unnamed' }),
-    })
-    if (!r.ok) throw new Error(`/v1/tokens ${r.status}`)
-    return r.json() as Promise<{ token: string; host_id: string; token_prefix: string }>
+  joins: () =>
+    get<{
+      items: Array<{
+        join_id: string
+        confirm_pin: string
+        hostname: string
+        agent_version: string | null
+        created_at: string
+        expires_at: string
+      }>
+    }>('/v1/joins'),
+  approveJoin: async (joinId: string) => {
+    const r = await fetch(`/v1/joins/${encodeURIComponent(joinId)}/approve`, { method: 'POST' })
+    if (!r.ok) throw new Error(`/v1/joins/${joinId}/approve ${r.status}`)
+  },
+  denyJoin: async (joinId: string) => {
+    const r = await fetch(`/v1/joins/${encodeURIComponent(joinId)}/deny`, { method: 'POST' })
+    if (!r.ok) throw new Error(`/v1/joins/${joinId}/deny ${r.status}`)
   },
   revokeToken: async (hostId: string) => {
     const r = await fetch(`/v1/tokens/${hostId}`, { method: 'DELETE' })

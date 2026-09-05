@@ -42,7 +42,7 @@ usage() {
   ./run.sh run
   ./run.sh run --bind 127.0.0.1:3847
   ./run.sh dev
-  ./run.sh agent init --url http://127.0.0.1:3847 --token <token>
+  ./run.sh agent init --url http://127.0.0.1:3847
   ./run.sh agent reload
   ./run.sh panel
   ./run.sh clean

@@ -6,8 +6,9 @@ use serde_json::Value;
 use crate::agg::extract_sessions;
 use crate::cache;
 use crate::util::{
-    attach_session_id, entries_to_buckets, expand_home, file_sig, parse_ts, project_from_encoded_dir,
-    project_from_path, read_json_value, to_count_opt, FileSig, TimingEvent, UsageEntry,
+    attach_session_id, entries_to_buckets, expand_home, file_sig, parse_ts,
+    project_from_encoded_dir, project_from_path, read_json_value, to_count_opt, FileSig,
+    TimingEvent, UsageEntry,
 };
 
 const SOURCE: &str = ai_usage_protocol::SOURCE_GROK;

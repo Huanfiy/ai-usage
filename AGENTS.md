@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志并增量上报；看板端接收多主机数据、落库、估算费用并内嵌 Web UI。两端为独立静态二进制，唯一耦合是 ingest 协议。
+AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志并增量上报；看板端接收多主机数据、落库、估算费用并内嵌 Web UI。两端为独立静态二进制，耦合是 ingest 协议与 agent 主动拉取的 join 接入。
 
 | 项 | 内容 |
 | --- | --- |
@@ -19,7 +19,7 @@ AI Usage 是用量可见性系统：采集端只读解析本机 AI 工具日志�
 ## 目录结构
 
 ```text
-crates/protocol/   ingest 契约
+crates/protocol/   ingest 与 join 契约
 crates/parsers/    解析器；夹具 fixtures/home/
 crates/agent/      ai-usage-agent
 crates/dash/       ai-usage-dash（嵌入 UI、LiteLLM 快照与 Cursor 自有价）

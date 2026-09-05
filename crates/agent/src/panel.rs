@@ -143,6 +143,10 @@ impl PanelState {
         self.inner.lock().expect("panel state").cfg.clone()
     }
 
+    pub fn replace_config(&self, cfg: AgentConfig) {
+        self.inner.lock().expect("panel state").cfg = cfg;
+    }
+
     pub fn enqueue_sync(&self, job: SyncJob) {
         let mut g = self.inner.lock().expect("panel state");
         g.sync_jobs.push(job);
@@ -262,7 +266,7 @@ impl PanelState {
         self.inner.lock().expect("panel state").auth_blocked.clone()
     }
 
-    fn clear_auth_blocked(&self) {
+    pub fn clear_auth_blocked(&self) {
         self.inner.lock().expect("panel state").auth_blocked.clear();
     }
 
@@ -416,6 +420,10 @@ fn dispatch(
             Ok(v) => json_ok(v),
             Err(err) => json_err(400, &err.to_string()),
         },
+        ("POST", "/v1/join") => match post_join(state, body) {
+            Ok(v) => json_ok(v),
+            Err(err) => json_err(400, &err.to_string()),
+        },
         ("POST", "/v1/sync") => match post_sync(state, body) {
             Ok(()) => json_status(202, serde_json::json!({"ok": true})),
             Err(err) => json_err(400, &err.to_string()),
@@ -506,8 +514,6 @@ struct DestPatch {
 #[derive(Deserialize)]
 struct ConfigPatch {
     #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
     destinations: Option<Vec<DestPatch>>,
     hostname: String,
     upload_project: bool,
@@ -516,6 +522,13 @@ struct ConfigPatch {
     /// 面板监听地址；改动写入配置，重启 daemon 后生效。
     #[serde(default)]
     bind: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct JoinPatch {
+    url: String,
+    #[serde(default)]
+    reset: bool,
 }
 
 #[derive(Deserialize)]
@@ -540,7 +553,7 @@ fn merge_destinations(old: &[Destination], incoming: &[DestPatch]) -> Result<Vec
             old.iter()
                 .find(|d| d.url == url)
                 .map(|d| d.token.clone())
-                .ok_or_else(|| anyhow::anyhow!("新看板地址需要 ingest token"))?
+                .unwrap_or_default()
         } else {
             patch.token.trim().to_string()
         };
@@ -555,13 +568,6 @@ fn put_config(state: &PanelState, body: &[u8]) -> Result<serde_json::Value> {
     let old_dests = cfg.destinations();
     let new_dests = if let Some(dests) = patch.destinations {
         merge_destinations(&old_dests, &dests)?
-    } else if let Some(url) = patch.url {
-        let mut dests = old_dests.clone();
-        if dests.is_empty() {
-            anyhow::bail!("配置不完整");
-        }
-        dests[0].url = config::normalize_url(&url);
-        dests
     } else {
         old_dests.clone()
     };
@@ -600,19 +606,68 @@ fn put_config(state: &PanelState, body: &[u8]) -> Result<serde_json::Value> {
     // 配置变了（token 可能已换），解除 401 封锁并唤醒调度循环让新配置立即生效。
     state.clear_auth_blocked();
     state.wake.notify_all();
-    let mut full_urls: Vec<String> = added;
+    let mut full_urls: Vec<String> = added
+        .into_iter()
+        .filter(|u| {
+            state
+                .config()
+                .find_dest(u)
+                .map(|d| d.enrolled())
+                .unwrap_or(false)
+        })
+        .collect();
     for url in token_changed {
-        if !full_urls.contains(&url) {
+        if state
+            .config()
+            .find_dest(&url)
+            .map(|d| d.enrolled())
+            .unwrap_or(false)
+            && !full_urls.contains(&url)
+        {
             full_urls.push(url);
         }
     }
-    for url in full_urls {
+    for url in &full_urls {
         state.enqueue_sync(SyncJob {
-            url: Some(url),
+            url: Some(url.clone()),
             full: true,
         });
     }
     Ok(serde_json::json!({ "ok": true, "restart_required": restart_required }))
+}
+
+fn post_join(state: &PanelState, body: &[u8]) -> Result<serde_json::Value> {
+    let req: JoinPatch = serde_json::from_slice(body).context("JSON")?;
+    let url = config::normalize_url(&req.url);
+    if url.is_empty() {
+        anyhow::bail!("看板地址不能为空");
+    }
+    let mut cfg = state.config();
+    if cfg.find_dest(&url).is_none() {
+        anyhow::bail!("未配置看板地址 {url}");
+    }
+    if req.reset {
+        cfg.upsert_destination(Destination::new(&url, ""));
+        cfg.save(&state.config_path)?;
+        state.replace_config(cfg.clone());
+        crate::join::clear(&state.data_dir, &url);
+        {
+            let mut g = state.inner.lock().expect("panel state");
+            g.auth_blocked.remove(&url);
+        }
+    }
+    let hostname = state.config().hostname;
+    let st = if req.reset {
+        crate::join::restart_join(&state.data_dir, &url, &hostname)?
+    } else {
+        crate::join::ensure_join(&state.data_dir, &url, &hostname)?
+    };
+    state.wake.notify_all();
+    Ok(serde_json::json!({
+        "ok": true,
+        "confirm_pin": st.confirm_pin,
+        "expires_at": st.expires_at,
+    }))
 }
 
 fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
@@ -624,7 +679,11 @@ fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
     } else {
         serde_json::from_slice(body).context("JSON")?
     };
-    let url = patch.url.as_deref().map(config::normalize_url).filter(|u| !u.is_empty());
+    let url = patch
+        .url
+        .as_deref()
+        .map(config::normalize_url)
+        .filter(|u| !u.is_empty());
     if let Some(ref u) = url {
         if state.config().find_dest(u).is_none() {
             anyhow::bail!("未配置看板地址 {u}");
@@ -640,7 +699,10 @@ fn post_sync(state: &PanelState, body: &[u8]) -> Result<()> {
             None => g.auth_blocked.clear(),
         }
     }
-    state.enqueue_sync(SyncJob { url, full: patch.full });
+    state.enqueue_sync(SyncJob {
+        url,
+        full: patch.full,
+    });
     Ok(())
 }
 
@@ -692,7 +754,12 @@ fn parse_ctx(data_dir: &std::path::Path) -> ParseCtx {
 #[derive(Serialize)]
 struct DestView {
     url: String,
+    enrolled: bool,
     token_prefix: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_pin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last: Option<DestSyncView>,
     auth_blocked: bool,
@@ -710,7 +777,6 @@ struct StatusPayload {
     interval_cursor: String,
     bind: String,
     panel: String,
-    token_prefix: String,
     version: String,
     config_path: String,
     data_dir: String,
@@ -763,10 +829,23 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
     let dest_views: Vec<DestView> = dests
         .iter()
         .map(|d| {
-            let st = crate::state::SyncState::load(&config::dest_state_path(&state.data_dir, &d.url));
+            let st =
+                crate::state::SyncState::load(&config::dest_state_path(&state.data_dir, &d.url));
+            let join = if d.enrolled() {
+                None
+            } else {
+                crate::join::load(&state.data_dir, &d.url)
+            };
             DestView {
                 url: d.url.clone(),
-                token_prefix: format!("{}…", d.token.chars().take(12).collect::<String>()),
+                enrolled: d.enrolled(),
+                token_prefix: if d.enrolled() {
+                    format!("{}…", d.token.chars().take(12).collect::<String>())
+                } else {
+                    String::new()
+                },
+                join_pin: join.as_ref().map(|j| j.confirm_pin.clone()),
+                join_expires_at: join.as_ref().map(|j| j.expires_at.clone()),
                 last: snap.dest_sync.get(&d.url).cloned(),
                 auth_blocked: snap.auth_blocked.contains(&d.url),
                 state_buckets: st.buckets.len(),
@@ -784,9 +863,6 @@ fn status_payload(state: &PanelState) -> serde_json::Value {
         interval_cursor: cfg.interval_cursor.clone(),
         bind: cfg.bind.clone(),
         panel: format!("http://{}", cfg.bind),
-        token_prefix: first
-            .map(|d| format!("{}…", d.token.chars().take(12).collect::<String>()))
-            .unwrap_or_default(),
         version: env!("CARGO_PKG_VERSION").into(),
         config_path: state.config_path.display().to_string(),
         data_dir: state.data_dir.display().to_string(),
@@ -1068,7 +1144,7 @@ mod tests {
     fn put_config_updates_interval() {
         let (_dir, state) = setup();
         let body = serde_json::json!({
-            "url": "http://127.0.0.1:3847",
+            "destinations": [{ "url": "http://127.0.0.1:3847" }],
             "hostname": "renamed",
             "upload_project": false,
             "interval_local": "1m",
@@ -1160,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn put_config_new_dest_requires_token() {
+    fn put_config_new_dest_without_token() {
         let (_dir, state) = setup();
         let body = serde_json::json!({
             "destinations": [
@@ -1172,13 +1248,19 @@ mod tests {
             "interval_local": "5m",
             "interval_cursor": "30m"
         });
-        let (st, _, _) = dispatch(
+        let (st, _, out) = dispatch(
             &state,
             "PUT",
             "/v1/config",
             &serde_json::to_vec(&body).unwrap(),
         );
-        assert_eq!(st, 400);
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let dests = state.config().destinations();
+        assert_eq!(dests.len(), 2);
+        assert!(dests[0].enrolled());
+        assert!(!dests[1].enrolled());
+        let jobs = state.take_sync_jobs();
+        assert!(jobs.is_empty(), "未接入地址不排队同步");
     }
 
     #[test]
@@ -1331,7 +1413,11 @@ mod tests {
                 url: "http://127.0.0.1:3847".into(),
                 full: false,
                 ok,
-                error: if ok { None } else { Some("鉴权失败".into()) },
+                error: if ok {
+                    None
+                } else {
+                    Some("鉴权失败".into())
+                },
                 error_kind: if ok { None } else { Some(PushErrorKind::Auth) },
                 ingested: 2,
                 sessions: 1,
@@ -1385,7 +1471,7 @@ mod tests {
         state.record_report(&sample_report(false));
         assert!(!state.auth_blocked().is_empty());
         let body = serde_json::json!({
-            "url": "http://127.0.0.1:3847",
+            "destinations": [{ "url": "http://127.0.0.1:3847" }],
             "hostname": "testhost",
             "upload_project": true,
             "interval_local": "5m",
@@ -1406,7 +1492,7 @@ mod tests {
         let (_dir, state) = setup();
         let mk = |bind: &str| {
             serde_json::to_vec(&serde_json::json!({
-                "url": "http://127.0.0.1:3847",
+                "destinations": [{ "url": "http://127.0.0.1:3847" }],
                 "hostname": "testhost",
                 "upload_project": true,
                 "interval_local": "5m",

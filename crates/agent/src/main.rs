@@ -2,6 +2,7 @@ mod config;
 mod cursor_accounts;
 mod cursor_credits;
 mod daemon;
+mod join;
 mod panel;
 mod state;
 mod sync;
@@ -31,12 +32,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 写入或合并配置：已有配置时按 URL upsert 该看板地址，其余字段保留
+    /// 写入或合并配置，并向看板申请接入（对照确认码在设置页批准）
     Init {
         #[arg(long)]
         url: String,
-        #[arg(long)]
-        token: String,
         /// 主机显示名（仅在新建或显式传入时写入）
         #[arg(long)]
         hostname: Option<String>,
@@ -90,66 +89,77 @@ fn run() -> Result<()> {
     match cli.cmd {
         Commands::Init {
             url,
-            token,
             hostname,
             upload_project,
             replace,
             no_sync,
         } => {
-            let dest = config::Destination::new(url, token);
-            // 已有配置默认 merge；文件损坏时报错而不是悄悄覆盖（--replace 才重写）
+            let dest = config::Destination::new(url, "");
             let existing = if replace || !config_path.exists() {
                 None
             } else {
                 Some(AgentConfig::load_or_setup(&config_path)?)
             };
-            let (cfg, dest_added, token_changed) = match existing {
+            let (mut cfg, dest_added) = match existing {
                 Some(mut cfg) => {
-                    // merge：只 upsert 这一条地址，间隔 / bind / 其余地址保留
-                    let old_token = cfg.find_dest(&dest.url).map(|d| d.token);
-                    let added = cfg.upsert_destination(dest.clone());
-                    let changed = matches!(&old_token, Some(t) if *t != dest.token);
+                    let already = cfg
+                        .find_dest(&dest.url)
+                        .map(|d| d.enrolled())
+                        .unwrap_or(false);
+                    let added = if already {
+                        false
+                    } else {
+                        cfg.upsert_destination(dest.clone())
+                    };
                     if let Some(h) = hostname {
                         cfg.hostname = h;
                     }
-                    (cfg, added, changed)
+                    (cfg, added || !already)
                 }
                 None => {
                     let hostname = hostname.unwrap_or_else(config::default_hostname);
                     (
-                        AgentConfig::new(dest.url.clone(), dest.token, hostname, upload_project),
+                        AgentConfig::new(dest.url.clone(), String::new(), hostname, upload_project),
                         true,
-                        false,
                     )
                 }
             };
             cfg.save(&config_path)?;
             std::fs::create_dir_all(&data_dir)?;
-            println!(
-                "已写入 {}（{}）",
-                config_path.display(),
-                if replace {
-                    "整文件重写"
-                } else if dest_added {
-                    "新增看板地址"
-                } else {
-                    "更新已有地址 token"
+            println!("已写入 {}", config_path.display());
+            let dest = cfg
+                .find_dest(&dest.url)
+                .ok_or_else(|| anyhow::anyhow!("未写入看板地址"))?;
+            if dest.enrolled() {
+                println!("看板 {} 已接入", dest.url);
+                if !no_sync {
+                    let jobs = sync::dest_jobs_for_url(&cfg, &dest.url, dest_added)?;
+                    do_sync_jobs(&cfg, &data_dir, &jobs)?;
                 }
-            );
-            println!(
-                "看板: {}   主机显示名: {}",
-                cfg.destinations()
-                    .into_iter()
-                    .map(|d| d.url)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                cfg.hostname
-            );
-            if !no_sync {
-                // 新地址或换 token（= 新 host_id）走全量，否则增量
-                let full = dest_added || token_changed;
-                let jobs = sync::dest_jobs_for_url(&cfg, &dest.url, full)?;
-                do_sync_jobs(&cfg, &data_dir, &jobs)?;
+            } else {
+                let st = join::ensure_join(&data_dir, &dest.url, &cfg.hostname)?;
+                println!(
+                    "确认码 {}（对照看板设置页批准，{} 分钟内有效）",
+                    st.confirm_pin, 10
+                );
+                match join::wait_for_claim(&dest.url, &st, join::init_timeout())? {
+                    Some(token) => {
+                        cfg.upsert_destination(config::Destination::new(&dest.url, token));
+                        cfg.save(&config_path)?;
+                        join::clear(&data_dir, &dest.url);
+                        println!("已领取 ingest token");
+                        if !no_sync {
+                            let jobs = sync::dest_jobs_for_url(&cfg, &dest.url, true)?;
+                            do_sync_jobs(&cfg, &data_dir, &jobs)?;
+                        }
+                    }
+                    None => {
+                        println!(
+                            "仍在等待批准。到看板设置页对照确认码 {} 后运行 daemon，或再执行 init。",
+                            st.confirm_pin
+                        );
+                    }
+                }
             }
         }
         Commands::Sync { full, url } => {
@@ -174,7 +184,11 @@ fn run() -> Result<()> {
                 // setup 模式：配置缺失也能起面板，等待用户在面板补首个看板地址
                 let cfg = AgentConfig::load_or_setup(&config_path)?;
                 if cfg.destinations().is_empty() {
-                    println!("尚未配置看板地址：打开面板填入看板 URL 与 ingest token 即可开始上报。");
+                    println!(
+                        "尚未配置看板地址：打开面板填入看板 URL，到看板设置页对照确认码批准。"
+                    );
+                } else if cfg.destinations().iter().any(|d| !d.enrolled()) {
+                    println!("有看板地址尚未接入：到看板设置页对照确认码批准。");
                 }
                 let r#override = match interval {
                     Some(raw) => Some(config::validate_interval(&raw)?),
@@ -226,10 +240,14 @@ fn status(config_path: &Path, data_dir: &Path) -> Result<()> {
             for (i, dest) in cfg.destinations().into_iter().enumerate() {
                 let label = if i == 0 { "url" } else { "url+" };
                 println!("{label:<9} {}", dest.url);
-                println!(
-                    "token:    {}…",
-                    dest.token.chars().take(12).collect::<String>()
-                );
+                if dest.enrolled() {
+                    println!(
+                        "token:    {}…",
+                        dest.token.chars().take(12).collect::<String>()
+                    );
+                } else {
+                    println!("token:    （未接入）");
+                }
                 let st = state::SyncState::load(&config::dest_state_path(data_dir, &dest.url));
                 println!(
                     "state:    {} buckets · {} sessions",

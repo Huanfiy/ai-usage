@@ -424,7 +424,10 @@ mod tests {
 
     #[test]
     fn plan_fetch_rejects_garbage_token() {
-        assert_eq!(fetch_plan_with_raw("nope").unwrap_err(), PlanFetchError::Token);
+        assert_eq!(
+            fetch_plan_with_raw("nope").unwrap_err(),
+            PlanFetchError::Token
+        );
         assert!(fetch_plan_snapshot("nope").is_none());
         assert_eq!(
             fetch_credit_grants("nope").unwrap_err(),

@@ -123,6 +123,19 @@ CREATE TABLE IF NOT EXISTS cursor_account_usage (
   fetched_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS join_requests (
+  join_id TEXT PRIMARY KEY,
+  claim_hash TEXT NOT NULL,
+  confirm_pin TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  agent_version TEXT,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  token TEXT,
+  host_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_buckets_start ON usage_buckets(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_buckets_host ON usage_buckets(host_id, bucket_start);
 CREATE INDEX IF NOT EXISTS idx_rollups_day ON daily_rollups(day);
@@ -344,12 +357,166 @@ pub fn delete_host(conn: &Connection, host_id: &str) -> Result<DeleteHostOutcome
     Ok(DeleteHostOutcome::Deleted)
 }
 
-pub fn token_count(conn: &Connection) -> Result<i64> {
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct JoinRow {
+    pub join_id: String,
+    pub claim_hash: String,
+    pub confirm_pin: String,
+    pub hostname: String,
+    pub agent_version: Option<String>,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+    pub token: Option<String>,
+    pub host_id: Option<String>,
+}
+
+fn map_join_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<JoinRow> {
+    Ok(JoinRow {
+        join_id: r.get(0)?,
+        claim_hash: r.get(1)?,
+        confirm_pin: r.get(2)?,
+        hostname: r.get(3)?,
+        agent_version: r.get(4)?,
+        status: r.get(5)?,
+        created_at: r.get(6)?,
+        expires_at: r.get(7)?,
+        token: r.get(8)?,
+        host_id: r.get(9)?,
+    })
+}
+
+pub fn insert_join(
+    conn: &Connection,
+    join_id: &str,
+    claim_hash: &str,
+    confirm_pin: &str,
+    hostname: &str,
+    agent_version: Option<&str>,
+    created_at: &str,
+    expires_at: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO join_requests(
+            join_id, claim_hash, confirm_pin, hostname, agent_version,
+            status, created_at, expires_at, token, host_id
+         ) VALUES(?1,?2,?3,?4,?5,'pending',?6,?7,NULL,NULL)",
+        params![
+            join_id,
+            claim_hash,
+            confirm_pin,
+            hostname,
+            agent_version,
+            created_at,
+            expires_at
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_join(conn: &Connection, join_id: &str) -> Result<Option<JoinRow>> {
+    let row = conn
+        .query_row(
+            "SELECT join_id, claim_hash, confirm_pin, hostname, agent_version,
+                    status, created_at, expires_at, token, host_id
+             FROM join_requests WHERE join_id = ?1",
+            params![join_id],
+            map_join_row,
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub fn pending_join_count(conn: &Connection, now: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COUNT(*) FROM ingest_tokens WHERE revoked_at IS NULL",
-        [],
+        "SELECT COUNT(*) FROM join_requests WHERE status = 'pending' AND expires_at > ?1",
+        params![now],
         |r| r.get(0),
     )?)
+}
+
+pub fn list_pending_joins(conn: &Connection, now: &str) -> Result<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT join_id, confirm_pin, hostname, agent_version, created_at, expires_at
+         FROM join_requests
+         WHERE status = 'pending' AND expires_at > ?1
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![now], |r| {
+            Ok(serde_json::json!({
+                "join_id": r.get::<_, String>(0)?,
+                "confirm_pin": r.get::<_, String>(1)?,
+                "hostname": r.get::<_, String>(2)?,
+                "agent_version": r.get::<_, Option<String>>(3)?,
+                "created_at": r.get::<_, String>(4)?,
+                "expires_at": r.get::<_, String>(5)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Expire stale pending/approved-unclaimed rows. Approved leftovers revoke the issued token.
+pub fn expire_stale_joins(conn: &Connection, now: &str) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT join_id, status, host_id FROM join_requests
+         WHERE expires_at <= ?1 AND status IN ('pending', 'approved')",
+    )?;
+    let stale: Vec<(String, String, Option<String>)> = stmt
+        .query_map(params![now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for (join_id, status, host_id) in stale {
+        if status == "approved" {
+            if let Some(hid) = host_id {
+                let _ = revoke_token(conn, &hid);
+            }
+        }
+        conn.execute(
+            "UPDATE join_requests SET status = 'expired', token = NULL WHERE join_id = ?1",
+            params![join_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn approve_join(conn: &Connection, join_id: &str, token: &str, host_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE join_requests SET status = 'approved', token = ?2, host_id = ?3
+         WHERE join_id = ?1 AND status = 'pending'",
+        params![join_id, token, host_id],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn deny_join(conn: &Connection, join_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE join_requests SET status = 'denied', token = NULL
+         WHERE join_id = ?1 AND status = 'pending'",
+        params![join_id],
+    )?;
+    Ok(n > 0)
+}
+
+/// Hand the plaintext token to the claimer once, then wipe it.
+pub fn claim_join(conn: &Connection, join_id: &str) -> Result<Option<(String, String)>> {
+    let row = match get_join(conn, join_id)? {
+        Some(r) if r.status == "approved" => r,
+        _ => return Ok(None),
+    };
+    let token = row.token.filter(|t| !t.is_empty());
+    let host_id = row.host_id.filter(|h| !h.is_empty());
+    let (token, host_id) = match (token, host_id) {
+        (Some(t), Some(h)) => (t, h),
+        _ => return Ok(None),
+    };
+    conn.execute(
+        "UPDATE join_requests SET status = 'claimed', token = NULL WHERE join_id = ?1",
+        params![join_id],
+    )?;
+    Ok(Some((token, host_id)))
 }
 
 /// 全部 Cursor 账号的最新套餐快照，按显示名排序。
@@ -615,6 +782,58 @@ mod tests {
                 |r| r.get(0),
             )?;
             assert_eq!(acct_tokens, 100);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn expire_approved_unclaimed_revokes_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            insert_join(
+                c,
+                "jid",
+                "a".repeat(64).as_str(),
+                "1234",
+                "box",
+                None,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:10:00+00:00",
+            )?;
+            insert_token(c, "th", "hostZ", "aiu_zzzzzzzz", None, "box")?;
+            assert!(approve_join(c, "jid", "aiu_secret", "hostZ")?);
+            expire_stale_joins(c, "2026-01-01T00:11:00+00:00")?;
+            let row = get_join(c, "jid")?.unwrap();
+            assert_eq!(row.status, "expired");
+            assert!(row.token.is_none());
+            let tok = lookup_token(c, "th")?.unwrap();
+            assert!(tok.revoked);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn claim_join_is_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            insert_join(
+                c,
+                "jid2",
+                "b".repeat(64).as_str(),
+                "9999",
+                "box",
+                None,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:10:00+00:00",
+            )?;
+            assert!(approve_join(c, "jid2", "aiu_once", "hostY")?);
+            let first = claim_join(c, "jid2")?;
+            assert_eq!(first, Some(("aiu_once".into(), "hostY".into())));
+            assert!(claim_join(c, "jid2")?.is_none());
             Ok(())
         })
         .unwrap();

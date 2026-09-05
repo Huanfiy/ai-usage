@@ -535,8 +535,8 @@
       gap: 8px;
       align-items: center;
     }
-    .dest-row .dest-url { flex: 1.4 1 160px; min-width: 0; }
-    .dest-row .dest-token { flex: 1 1 120px; min-width: 0; }
+    .dest-row .dest-url { flex: 1 1 160px; min-width: 0; }
+    .join-pin { font-variant-numeric: tabular-nums; letter-spacing: 0.12em; font-weight: 600; }
     .dest-row .icon-btn, .dest-row .btn { flex-shrink: 0; }
     .dest-status {
       display: flex;
@@ -691,7 +691,7 @@
       .sync-errline { padding-left: 0; }
       .fields, .fields.even { grid-template-columns: 1fr; }
       .dest-row { flex-wrap: wrap; }
-      .dest-row .dest-url, .dest-row .dest-token { flex: 1 1 100%; }
+      .dest-row .dest-url { flex: 1 1 100%; }
     }
   </style>
 </head>
@@ -777,7 +777,7 @@
         </label>
       </div>
       <div class="dest-label">看板地址</div>
-      <div class="msg is-err" id="setup-hint" hidden>尚未配置看板地址：填入看板 URL 与 ingest token 并保存，即开始上报。token 由看板端 `ai-usage-dash token create` 或设置页签发。</div>
+      <div class="msg is-err" id="setup-hint" hidden>尚未配置看板地址：填入看板 URL 并保存，到看板设置页对照确认码批准后开始上报。</div>
       <div class="dest-list" id="dests"></div>
       <div class="cfg-foot">
         <div class="check-wrap">
@@ -1424,6 +1424,16 @@
     }
     function destStatusLine(d) {
       const line = el("div", "dest-status");
+      if (d.enrolled) {
+        if (d.token_prefix) line.appendChild(el("span", "chip on", d.token_prefix));
+      } else if (d.join_pin) {
+        const pin = el("span", "chip join-pin", "确认码 " + d.join_pin);
+        pin.title = "到看板设置页对照此码并批准";
+        line.appendChild(pin);
+        line.appendChild(el("span", "meta", "等待审批"));
+      } else {
+        line.appendChild(el("span", "meta", "未接入"));
+      }
       if (d.auth_blocked) line.appendChild(el("span", "chip bad", "鉴权失败 · 已暂停调度"));
       const last = d.last;
       if (last) {
@@ -1459,12 +1469,10 @@
       urlIn.placeholder = "http://127.0.0.1:3847";
       urlIn.autocomplete = "off";
       urlIn.oninput = () => markDestsDirty();
-      const tokIn = document.createElement("input");
-      tokIn.type = "password";
-      tokIn.className = "dest-token";
-      tokIn.placeholder = d.token_prefix ? (d.token_prefix + " 留空则保持") : "ingest token（新地址必填）";
-      tokIn.autocomplete = "off";
-      tokIn.oninput = () => markDestsDirty();
+      const joinBtn = el("button", "btn ghost mini", d.enrolled ? "重新申请" : (d.join_pin ? "再申请" : "申请接入"));
+      joinBtn.type = "button";
+      joinBtn.title = d.enrolled ? "清除当前 token 并重新向看板申请" : "向看板申请接入";
+      joinBtn.onclick = () => joinOne(urlIn.value.trim(), joinBtn, !!d.enrolled);
       const sync = iconBtn("refresh", "增量同步到此地址");
       sync.onclick = () => syncOne(urlIn.value.trim(), sync, false);
       const full = el("button", "btn ghost mini", "全量");
@@ -1483,7 +1491,7 @@
         refreshDestRemoveButtons();
       };
       row.appendChild(urlIn);
-      row.appendChild(tokIn);
+      if (d.url) row.appendChild(joinBtn);
       row.appendChild(sync);
       row.appendChild(full);
       row.appendChild(del);
@@ -1505,15 +1513,40 @@
       box.innerHTML = "";
       const list = s.destinations && s.destinations.length
         ? s.destinations
-        : [{ url: s.url || "", token_prefix: s.token_prefix || "" }];
+        : [{ url: s.url || "" }];
       list.forEach((d) => box.appendChild(destRow(d)));
       refreshDestRemoveButtons();
     }
     function collectDests() {
       return [...$("dests").querySelectorAll(".dest-block")].map((b) => ({
         url: b.querySelector(".dest-url").value.trim(),
-        token: b.querySelector(".dest-token").value.trim(),
       })).filter((d) => d.url);
+    }
+    async function joinOne(url, btn, reset) {
+      url = normUrl(url);
+      if (!url) {
+        setMsg("cfg-msg", "请先填写看板地址", "err");
+        return;
+      }
+      const saved = ((lastStatus && lastStatus.destinations) || []).some((d) => normUrl(d.url) === url);
+      if (!saved) {
+        setMsg("cfg-msg", "请先保存该地址", "err");
+        return;
+      }
+      if (reset) {
+        const yes = await confirmDlg("重新申请会作废当前接入，需再次在看板批准。继续？", "重新申请");
+        if (!yes) return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await api("/v1/join", { method: "POST", body: JSON.stringify({ url, reset: !!reset }) });
+        setMsg("cfg-msg", "确认码 " + r.confirm_pin + "，请到看板设置页批准", "ok");
+        await refresh();
+      } catch (e) {
+        setMsg("cfg-msg", e.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
     }
     async function syncOne(url, btn, full) {
       url = normUrl(url);
@@ -2021,7 +2054,7 @@
     $("upload_project").addEventListener("change", () => markDirty());
     $("add-dest").onclick = () => {
       markDestsDirty();
-      $("dests").appendChild(destRow({ url: "", token_prefix: "" }));
+      $("dests").appendChild(destRow({ url: "" }));
       refreshDestRemoveButtons();
       const rows = $("dests").querySelectorAll(".dest-url");
       const last = rows[rows.length - 1];
@@ -2049,12 +2082,26 @@
           }),
         });
         clearDirty();
+        await refresh();
+        const pins = [];
+        for (const d of (lastStatus && lastStatus.destinations) || []) {
+          if (!d.enrolled && !d.join_pin) {
+            try {
+              const jr = await api("/v1/join", { method: "POST", body: JSON.stringify({ url: d.url }) });
+              if (jr.confirm_pin) pins.push(jr.confirm_pin);
+            } catch (e) {
+              setMsg("cfg-msg", e.message, "err");
+            }
+          }
+        }
+        if (pins.length) await refresh();
         if (r.restart_required) {
           setMsg("cfg-msg", "已保存。面板监听地址已修改，重启 daemon 后生效", "ok");
+        } else if (pins.length) {
+          setMsg("cfg-msg", "已保存。确认码 " + pins.join("、") + "，请到看板设置页批准", "ok");
         } else {
-          setMsg("cfg-msg", "已保存，新地址将全量同步", "ok");
+          setMsg("cfg-msg", "已保存", "ok");
         }
-        refresh();
       } catch (e) {
         setMsg("cfg-msg", e.message, "err");
       } finally {

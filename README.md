@@ -1,6 +1,6 @@
 # AI Usage
 
-采集端只读解析本机 AI 工具日志并增量上报；看板端接收多主机数据、落库、估算费用并内嵌 Web UI。两端为独立静态二进制，唯一耦合是 ingest 协议。
+采集端只读解析本机 AI 工具日志并增量上报；看板端接收多主机数据、落库、估算费用并内嵌 Web UI。两端为独立静态二进制，耦合是 ingest 协议与 agent 主动拉取的 join 接入。
 
 [![CI](https://github.com/Huanfiy/ai-usage/actions/workflows/ci.yml/badge.svg)](https://github.com/Huanfiy/ai-usage/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Huanfiy/ai-usage)](https://github.com/Huanfiy/ai-usage/releases/latest)
@@ -21,8 +21,8 @@
 
 ```bash
 ./ai-usage-dash serve
-# 空库会打印一次性 ingest token
-./ai-usage-agent init --url http://127.0.0.1:3847 --token <token>
+./ai-usage-agent init --url http://127.0.0.1:3847
+# 打印确认码；浏览器打开看板设置页批准
 ./ai-usage-agent daemon
 ```
 

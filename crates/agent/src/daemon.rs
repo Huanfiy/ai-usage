@@ -61,9 +61,7 @@ impl Tier {
                 Some(last) => next_aligned(last, period),
             },
         };
-        target
-            .duration_since(now)
-            .unwrap_or(Duration::from_secs(1))
+        target.duration_since(now).unwrap_or(Duration::from_secs(1))
     }
 }
 
@@ -115,6 +113,31 @@ pub fn run_loop(
         } else {
             (cfg.local_interval()?, cfg.cursor_interval()?)
         };
+        {
+            let mut live = state.config();
+            if let Ok(claimed) = crate::join::apply_claims(&mut live, config_path, data_dir) {
+                if !claimed.is_empty() {
+                    state.replace_config(live);
+                    state.clear_auth_blocked();
+                    for url in claimed {
+                        state.enqueue_sync(SyncJob {
+                            url: Some(url),
+                            full: true,
+                        });
+                    }
+                }
+            }
+        }
+        let cfg = state.config();
+        for d in cfg.destinations() {
+            if !d.enrolled() && crate::join::load(data_dir, &d.url).is_none() {
+                if let Err(err) = crate::join::ensure_join(data_dir, &d.url, &cfg.hostname) {
+                    eprintln!("申请接入 {} 失败: {err:#}", d.url);
+                }
+            }
+        }
+        let pending_join = cfg.destinations().iter().any(|d| !d.enrolled());
+
         let jobs = state.take_sync_jobs();
         let now = SystemTime::now();
         let due_local = local.due(local_d, now);
@@ -122,7 +145,12 @@ pub fn run_loop(
         let scheduled = due_local || due_cursor;
 
         if jobs.is_empty() && !scheduled {
-            state.wait_timeout(wait_hint(now, &local, local_d, &cursor, cursor_d));
+            let wait = if pending_join {
+                crate::join::POLL_INTERVAL
+            } else {
+                wait_hint(now, &local, local_d, &cursor, cursor_d)
+            };
+            state.wait_timeout(wait);
             continue;
         }
 
@@ -161,8 +189,11 @@ pub fn run_loop(
         let selected = select_jobs(&dests, &jobs, scheduled, &blocked);
 
         if selected.is_empty() {
-            let view =
-                LastSyncView::from_error("所有看板地址均鉴权失败，已暂停上报；请在面板更新 token");
+            let view = if pending_join {
+                LastSyncView::with_note("等待看板审批接入")
+            } else {
+                LastSyncView::from_error("所有看板地址均鉴权失败，已暂停上报；请在面板重新申请接入")
+            };
             state.record_sync(
                 run_local.then(|| view.clone()),
                 run_cursor.then(|| view.clone()),
@@ -174,7 +205,12 @@ pub fn run_loop(
             if run_cursor {
                 cursor.advance(now);
             }
-            state.wait_timeout(wait_hint(now, &local, local_d, &cursor, cursor_d));
+            let wait = if pending_join {
+                crate::join::POLL_INTERVAL
+            } else {
+                wait_hint(now, &local, local_d, &cursor, cursor_d)
+            };
+            state.wait_timeout(wait);
             continue;
         }
 
@@ -235,13 +271,11 @@ pub fn run_loop(
                 }
             }
         }
-        state.wait_timeout(wait_hint(
-            SystemTime::now(),
-            &local,
-            local_d,
-            &cursor,
-            cursor_d,
-        ));
+        let mut wait = wait_hint(SystemTime::now(), &local, local_d, &cursor, cursor_d);
+        if pending_join {
+            wait = wait.min(crate::join::POLL_INTERVAL);
+        }
+        state.wait_timeout(wait);
     }
 }
 
@@ -255,6 +289,9 @@ fn select_jobs(
 ) -> Vec<sync::DestJob> {
     let mut out = Vec::new();
     for d in dests {
+        if !d.enrolled() {
+            continue;
+        }
         let mut explicit = false;
         let mut full = false;
         for j in jobs {
@@ -354,10 +391,7 @@ fn wait_hint(
 /// Next Unix-aligned instant strictly after `now` (5m → :00/:05/…, 30m → :00/:30).
 pub(crate) fn next_aligned(now: SystemTime, period: Duration) -> SystemTime {
     let period_s = period.as_secs().max(1);
-    let now_s = now
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now_s = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     UNIX_EPOCH + Duration::from_secs((now_s / period_s + 1) * period_s)
 }
 
@@ -720,6 +754,17 @@ mod tests {
     }
 
     #[test]
+    fn select_jobs_skips_unenrolled() {
+        let dests = vec![
+            Destination::new("http://a", "ta"),
+            Destination::new("http://b", ""),
+        ];
+        let out = select_jobs(&dests, &[], true, &HashSet::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].dest.url, "http://a");
+    }
+
+    #[test]
     fn tier_views_reflect_skipped_sources_and_dest_errors() {
         let report = SyncReport {
             sources: vec![
@@ -753,7 +798,10 @@ mod tests {
             }],
         };
         let (agent, cursor) = tier_views(&report, true, true);
-        assert!(agent.unwrap().error.is_none(), "本地档不受 cursor skip 影响");
+        assert!(
+            agent.unwrap().error.is_none(),
+            "本地档不受 cursor skip 影响"
+        );
         let cur = cursor.unwrap();
         assert!(cur.error.unwrap().contains("Cursor 登录失效"));
 

@@ -173,22 +173,22 @@ impl SyncReport {
 pub fn all_dest_jobs(cfg: &AgentConfig) -> Vec<DestJob> {
     cfg.destinations()
         .into_iter()
+        .filter(|d| d.enrolled())
         .map(|dest| DestJob { dest, full: false })
         .collect()
 }
 
 pub fn dest_jobs_for_url(cfg: &AgentConfig, url: &str, full: bool) -> Result<Vec<DestJob>> {
     let key = config::normalize_url(url);
-    let jobs: Vec<DestJob> = cfg
+    let dest = cfg
         .destinations()
         .into_iter()
-        .filter(|d| d.url == key)
-        .map(|dest| DestJob { dest, full })
-        .collect();
-    if jobs.is_empty() {
-        anyhow::bail!("未配置看板地址 {key}");
+        .find(|d| d.url == key)
+        .ok_or_else(|| anyhow::anyhow!("未配置看板地址 {key}"))?;
+    if !dest.enrolled() {
+        anyhow::bail!("看板地址 {key} 尚未接入");
     }
-    Ok(jobs)
+    Ok(vec![DestJob { dest, full }])
 }
 
 /// Parse once, then fan out to each destination. Per-destination failures are
@@ -301,9 +301,7 @@ pub fn run_sync_jobs(
             .iter()
             .map(|a| a.account_hash.clone())
             .collect();
-        if let Err(err) =
-            crate::cursor_credits::store(data_dir, &credits, |h| known.contains(h))
-        {
+        if let Err(err) = crate::cursor_credits::store(data_dir, &credits, |h| known.contains(h)) {
             snap_warnings.push(format!("Cursor: 信用余额缓存写入失败（{err}）"));
         }
         if let Some(src) = sources.iter_mut().find(|s| s.source == SOURCE_CURSOR) {
@@ -700,6 +698,15 @@ mod tests {
         assert!(one[0].full);
         assert!(dest_jobs_for_url(&cfg, "http://nope:1", false).is_err());
         assert_eq!(all_dest_jobs(&cfg).len(), 2);
+        cfg.set_destinations(vec![
+            Destination::new("http://127.0.0.1:3847", "t1"),
+            Destination::new("http://10.0.0.2:3847", ""),
+        ]);
+        assert_eq!(all_dest_jobs(&cfg).len(), 1);
+        let err = dest_jobs_for_url(&cfg, "http://10.0.0.2:3847", false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("尚未接入"), "{err}");
     }
 
     #[test]

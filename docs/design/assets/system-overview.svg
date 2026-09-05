@@ -14,7 +14,7 @@
   </defs>
   <rect width="1100" height="640" rx="20" fill="#f8fafc"/>
   <text x="40" y="42" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="20" font-weight="700" fill="#0f172a">系统全景</text>
-  <text x="40" y="64" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" fill="#64748b">采集发生在宿主机；聚合与展示发生在看板。两端唯一耦合是版本化 ingest 协议。</text>
+  <text x="40" y="64" font-family="system-ui,-apple-system,'Segoe UI','PingFang SC','Noto Sans SC',sans-serif" font-size="13" fill="#64748b">采集发生在宿主机；聚合与展示发生在看板。两端耦合是 ingest 与 agent 主动拉取的 join 接入。</text>
 
   <g filter="url(#shadow)">
     <rect x="400" y="84" width="300" height="52" rx="12" fill="#fff" stroke="#e2e8f0"/>

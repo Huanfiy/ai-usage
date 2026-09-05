@@ -1,4 +1,6 @@
-//! Ingest protocol: the only coupling between agent and dash.
+//! Agent ↔ dash contract: ingest (`schema_version = 1`) and join enrollment.
+//!
+//! Both are agent-initiated. Dash never opens a connection to a host.
 //!
 //! `cache_read` and `cache_creation` stay in separate fields. Merging them would
 //! make cost estimates unrecoverable (Anthropic `cache_creation` is 12.5× `cache_read`).
@@ -10,6 +12,14 @@ use sha2::{Digest, Sha256};
 pub const SCHEMA_VERSION: u32 = 1;
 pub const BUCKET_BATCH: usize = 100;
 pub const SESSION_BATCH: usize = 500;
+
+/// Join request lifetime. After this the row is expired; an approved-but-unclaimed
+/// token is revoked.
+pub const JOIN_TTL_SECS: u64 = 600;
+/// Max rows in `pending` at once (not expired).
+pub const JOIN_PENDING_MAX: usize = 32;
+/// Per-IP create cap inside one TTL window.
+pub const JOIN_IP_LIMIT: usize = 10;
 
 pub const SOURCE_CLAUDE_CODE: &str = "claude-code";
 pub const SOURCE_CODEX: &str = "codex";
@@ -306,6 +316,47 @@ pub struct ProtectedStats {
     pub buckets: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinRequest {
+    pub hostname: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    /// SHA-256 hex of the agent-held claim secret.
+    pub claim_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinCreated {
+    pub join_id: String,
+    pub confirm_pin: String,
+    pub expires_in: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinStatus {
+    Pending,
+    Approved,
+    Denied,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinPollResponse {
+    pub status: JoinStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_pin: Option<String>,
+}
+
+/// SHA-256 hex (64 lowercase chars). Same width as [`hash_token`].
+pub fn is_valid_claim_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 pub fn round_to_half_hour(ts: DateTime<Utc>) -> DateTime<Utc> {
     let minute = if ts.minute() < 30 { 0 } else { 30 };
     ts.with_minute(minute)
@@ -373,7 +424,8 @@ pub fn normalize_timezone(raw: &str) -> Option<String> {
     if t.len() != 6 || (b[0] != b'+' && b[0] != b'-') || b[3] != b':' {
         return None;
     }
-    if !t[1..3].bytes().all(|c| c.is_ascii_digit()) || !t[4..6].bytes().all(|c| c.is_ascii_digit()) {
+    if !t[1..3].bytes().all(|c| c.is_ascii_digit()) || !t[4..6].bytes().all(|c| c.is_ascii_digit())
+    {
         return None;
     }
     let h: i32 = t[1..3].parse().ok()?;
@@ -519,6 +571,34 @@ mod tests {
         assert_ne!(machine, a);
         assert_ne!(a, c);
         assert!(a.contains(&account_hash_from_sub("acct-a")));
+    }
+
+    #[test]
+    fn join_types_roundtrip() {
+        let req = JoinRequest {
+            hostname: "box".into(),
+            agent_version: Some("0.1.0".into()),
+            claim_hash: hash_token("secret"),
+        };
+        assert!(is_valid_claim_hash(&req.claim_hash));
+        assert!(!is_valid_claim_hash("abc"));
+        let created = JoinCreated {
+            join_id: "ab".repeat(16),
+            confirm_pin: "4821".into(),
+            expires_in: JOIN_TTL_SECS,
+        };
+        let raw = serde_json::to_string(&created).unwrap();
+        let back: JoinCreated = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.confirm_pin, "4821");
+        let poll = JoinPollResponse {
+            status: JoinStatus::Approved,
+            token: Some("aiu_x".into()),
+            host_id: Some("h".into()),
+            confirm_pin: None,
+        };
+        let v = serde_json::to_value(&poll).unwrap();
+        assert_eq!(v["status"], "approved");
+        assert_eq!(v["token"], "aiu_x");
     }
 
     #[test]

@@ -62,6 +62,10 @@ impl Destination {
             token: token.into(),
         }
     }
+
+    pub fn enrolled(&self) -> bool {
+        !self.token.trim().is_empty()
+    }
 }
 
 impl AgentConfig {
@@ -198,9 +202,6 @@ impl AgentConfig {
             if !d.url.starts_with("http://") && !d.url.starts_with("https://") {
                 anyhow::bail!("看板地址需以 http:// 或 https:// 开头: {}", d.url);
             }
-            if d.token.trim().is_empty() {
-                anyhow::bail!("看板地址 {} 缺少 ingest token", d.url);
-            }
             if !seen.insert(d.url.clone()) {
                 anyhow::bail!("看板地址重复: {}", d.url);
             }
@@ -248,7 +249,9 @@ pub fn parse_interval(s: &str) -> Result<Duration> {
         anyhow::bail!("间隔为空，格式如 30s / 5m / 2h");
     }
     if let Some(num) = s.strip_suffix('s') {
-        return Ok(Duration::from_secs(num.parse().context("间隔格式如 30s / 5m / 2h")?));
+        return Ok(Duration::from_secs(
+            num.parse().context("间隔格式如 30s / 5m / 2h")?,
+        ));
     }
     if let Some(num) = s.strip_suffix('m') {
         return Ok(Duration::from_secs(
@@ -455,6 +458,16 @@ mod tests {
         cfg.validate_base().unwrap();
         assert!(cfg.validate().is_err());
         assert!(!cfg.hostname.is_empty(), "空配置也带默认主机名");
+    }
+
+    #[test]
+    fn dest_without_token_is_unenrolled_but_valid() {
+        let mut cfg = AgentConfig::empty();
+        cfg.set_destinations(vec![Destination::new("http://127.0.0.1:3847", "")]);
+        cfg.validate().unwrap();
+        assert!(!cfg.destinations()[0].enrolled());
+        cfg.save(&tempfile::tempdir().unwrap().path().join("agent.toml"))
+            .unwrap();
     }
 
     #[test]
