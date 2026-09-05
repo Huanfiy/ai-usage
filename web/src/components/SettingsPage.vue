@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api, type HostRow } from '../api'
+import { api, type HostRow, type PricingStatus } from '../api'
 import { fmtTime } from '../format'
 
 const props = defineProps<{
@@ -33,7 +33,12 @@ type JoinItem = {
 
 const tokens = ref<TokenItem[]>([])
 const joins = ref<JoinItem[]>([])
+const pricing = ref<PricingStatus | null>(null)
+const pricingMsg = ref('')
+const pricingBusy = ref(false)
 const err = ref('')
+
+const priceBusy = computed(() => pricingBusy.value || pricing.value?.updating === true)
 
 const hostSeen = computed(() => {
   const m: Record<string, string> = {}
@@ -42,9 +47,26 @@ const hostSeen = computed(() => {
 })
 
 async function load() {
-  const [r, j] = await Promise.all([api.tokens(), api.joins()])
+  const [r, j, p] = await Promise.all([api.tokens(), api.joins(), api.pricing()])
   tokens.value = (r.items ?? []) as TokenItem[]
   joins.value = (j.items ?? []) as JoinItem[]
+  pricing.value = p
+}
+
+async function updatePricing() {
+  pricingBusy.value = true
+  pricingMsg.value = ''
+  err.value = ''
+  try {
+    const r = await api.updatePricing()
+    pricing.value = r
+    pricingMsg.value = `已拉取 ${r.fetched} 条模型报价，费用已按新价目重算`
+    emit('changed')
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    pricingBusy.value = false
+  }
 }
 
 onMounted(() => {
@@ -125,6 +147,30 @@ async function remove(hostId: string) {
           <i />
         </button>
       </div>
+    </section>
+
+    <section class="card" style="margin-bottom: 12px">
+      <h2>价目表</h2>
+      <div class="switch-row">
+        <div>
+          <div class="switch-title">
+            {{ pricing?.cached ? '已刷新的上游价目表' : '内置价目快照' }}
+          </div>
+          <p class="switch-hint">
+            <template v-if="pricing">
+              {{ pricing.models }} 个模型 ·
+              {{ pricing.updated_at ? `更新于 ${fmtTime(pricing.updated_at)}` : '无更新时间' }}
+            </template>
+            <template v-else>读取中…</template>
+            <br />
+            费用在查询时按价目折算，刷新后历史数据一并重算。新模型需上游 LiteLLM 已收录。
+          </p>
+        </div>
+        <button type="button" class="chip" :disabled="priceBusy" @click="updatePricing">
+          {{ priceBusy ? '更新中…' : '更新价目表' }}
+        </button>
+      </div>
+      <p v-if="pricingMsg" class="switch-hint" style="margin-bottom: 0">{{ pricingMsg }}</p>
     </section>
 
     <section class="card" style="margin-bottom: 12px">

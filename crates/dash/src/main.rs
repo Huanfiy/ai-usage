@@ -112,6 +112,9 @@ async fn run() -> Result<()> {
                 pricing: Arc::new(RwLock::new(book)),
                 config: cfg.clone(),
                 join_hits: Arc::new(std::sync::Mutex::new(Vec::new())),
+                data_dir: Arc::new(data_dir.clone()),
+                pricing_override: pricing_override.map(Arc::new),
+                pricing_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
             let app = http::router(state).layer(tower_http::trace::TraceLayer::new_for_http());
             let addr = cfg.bind_addr()?;

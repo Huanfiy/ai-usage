@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,10 @@ pub struct AppState {
     pub pricing: Arc<RwLock<PriceBook>>,
     pub config: DashConfig,
     pub join_hits: Arc<Mutex<Vec<(String, Instant)>>>,
+    pub data_dir: Arc<PathBuf>,
+    pub pricing_override: Option<Arc<PathBuf>>,
+    /// Serializes `/v1/pricing/update`; one upstream fetch at a time.
+    pub pricing_busy: Arc<AtomicBool>,
 }
 
 #[derive(RustEmbed)]
@@ -55,6 +61,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/joins", get(list_joins))
         .route("/v1/joins/{join_id}/approve", post(approve_join))
         .route("/v1/joins/{join_id}/deny", post(deny_join))
+        .route("/v1/pricing", get(pricing_status))
+        .route("/v1/pricing/update", post(update_pricing))
         .route("/v1/tokens", get(list_tokens))
         .route("/v1/tokens/{host_id}", delete(revoke_token))
         .fallback(static_handler)
@@ -542,6 +550,71 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
     v.strip_prefix("Bearer ").map(str::trim)
 }
 
+async fn pricing_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    Ok(Json(price_book_status(&st)))
+}
+
+/// Pulls the upstream LiteLLM table into the data dir, then swaps the in-memory
+/// book. Costs are computed per query, so history is re-priced without restart.
+async fn update_pricing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let guard = BusyGuard::acquire(&st.pricing_busy)
+        .ok_or_else(|| ApiError::Bad("价目表正在更新，请稍候".into()))?;
+    let data_dir = st.data_dir.clone();
+    let fetched = tokio::task::spawn_blocking(move || crate::pricing::fetch_and_store(&data_dir))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(|e| ApiError::Bad(format!("拉取上游价目表失败：{e}")))?;
+    let book = PriceBook::load(
+        &st.data_dir,
+        st.pricing_override.as_ref().map(|p| p.as_path()),
+    )
+    .map_err(ApiError::internal)?;
+    {
+        let mut w = st.pricing.write().expect("pricing lock");
+        *w = book;
+    }
+    drop(guard);
+    let mut out = price_book_status(&st);
+    out["ok"] = json!(true);
+    out["fetched"] = json!(fetched);
+    Ok(Json(out))
+}
+
+fn price_book_status(st: &AppState) -> Value {
+    let book = st.pricing.read().expect("pricing lock");
+    json!({
+        "updated_at": book.updated_at,
+        "models": book.model_count(),
+        "cached": st.data_dir.join("pricing.json").is_file(),
+        "updating": st.pricing_busy.load(Ordering::SeqCst),
+    })
+}
+
+/// Clears the in-flight flag on every exit path, error and panic alike.
+struct BusyGuard(Arc<AtomicBool>);
+
+impl BusyGuard {
+    fn acquire(flag: &Arc<AtomicBool>) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(flag.clone()))
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 fn require_ui(st: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
     if st.config.ui_token.is_empty() {
         return Ok(());
@@ -654,6 +727,9 @@ mod tests {
             pricing: Arc::new(RwLock::new(book)),
             config: DashConfig::default(),
             join_hits: Arc::new(Mutex::new(Vec::new())),
+            data_dir: Arc::new(dir.path().to_path_buf()),
+            pricing_override: None,
+            pricing_busy: Arc::new(AtomicBool::new(false)),
         };
         (router(state), dir)
     }
@@ -720,6 +796,36 @@ mod tests {
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["error"], "not found");
+    }
+
+    #[tokio::test]
+    async fn pricing_status_reports_embedded_snapshot() {
+        let (app, _dir) = app();
+        let (status, body) = get_json(app, "/v1/pricing").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["models"].as_u64().unwrap() > 0);
+        assert!(body["updated_at"].is_string());
+        // Temp data dir holds no refreshed cache yet.
+        assert_eq!(body["cached"], json!(false));
+        assert_eq!(body["updating"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn pricing_update_rejects_concurrent_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        let state = AppState {
+            db: Arc::new(db),
+            pricing: Arc::new(RwLock::new(PriceBook::load(dir.path(), None).unwrap())),
+            config: DashConfig::default(),
+            join_hits: Arc::new(Mutex::new(Vec::new())),
+            data_dir: Arc::new(dir.path().to_path_buf()),
+            pricing_override: None,
+            pricing_busy: Arc::new(AtomicBool::new(true)),
+        };
+        let (status, body) = post_json(router(state), "/v1/pricing/update", json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("正在更新"));
     }
 
     #[tokio::test]

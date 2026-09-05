@@ -31,7 +31,6 @@ pub struct ModelPrice {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct PriceBook {
     pub updated_at: Option<String>,
     index: HashMap<String, ModelPrice>,
@@ -74,6 +73,11 @@ impl PriceBook {
             updated_at,
             index: build_index(merged),
         })
+    }
+
+    /// Distinct normalized models carrying a price.
+    pub fn model_count(&self) -> usize {
+        self.index.len()
     }
 
     pub fn lookup(&self, model: &str) -> Option<&ModelPrice> {

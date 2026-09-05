@@ -54,7 +54,7 @@ install -m755 "ai-usage-${VER}-x86_64-unknown-linux-musl"/ai-usage-{agent,dash} 
 
 **看板暴露**：默认绑回环 `127.0.0.1:3847`。绑非回环须设 `ui_token`，或加 `--behind-proxy`。
 
-**费用**：查询时用构建期嵌入的 LiteLLM 价目快照（MIT）；`ai-usage-dash pricing update` 可刷新数据目录缓存。未知模型计入 token、排除出费用，并以 coverage 给出覆盖比例。细节见 [docs/design/architecture.md](docs/design/architecture.md)。
+**费用**：查询时用构建期嵌入的 LiteLLM 价目快照（MIT）；设置页「更新价目表」按钮或 `ai-usage-dash pricing update` 可刷新数据目录缓存，前者刷完即热替换、不必重启。未知模型计入 token、排除出费用，并以 coverage 给出覆盖比例。细节见 [docs/design/architecture.md](docs/design/architecture.md)。
 
 **多机**：看板部署到一台机器，各宿主机 agent 向外推送。同一采集端可同时向多个看板地址上报。
 

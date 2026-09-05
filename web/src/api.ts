@@ -106,6 +106,13 @@ export type SessionRow = {
   tokens?: TokenTotals
 }
 
+export type PricingStatus = {
+  updated_at: string | null
+  models: number
+  cached: boolean
+  updating: boolean
+}
+
 export type Query = {
   from: string
   to: string
@@ -145,6 +152,13 @@ export const api = {
   hosts: () => get<{ items: HostRow[] }>('/v1/hosts'),
   cursorAccounts: () => get<{ items: CursorAccountRow[] }>('/v1/cursor-accounts'),
   filters: (q: Query) => get<{ sources: string[]; models: string[]; projects: string[] }>('/v1/filters' + qs(q)),
+  pricing: () => get<PricingStatus>('/v1/pricing'),
+  updatePricing: async () => {
+    const r = await fetch('/v1/pricing/update', { method: 'POST' })
+    const body = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(body.error || `/v1/pricing/update ${r.status}`)
+    return body as PricingStatus & { fetched: number }
+  },
   tokens: () =>
     get<{
       items: Array<{
