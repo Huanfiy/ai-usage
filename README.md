@@ -35,7 +35,7 @@
 当前发布只提供 **Linux x86_64 musl 静态二进制**，不依赖宿主机 glibc / Node / Python。其它平台尚未提供。
 
 ```bash
-VER=0.1.0
+VER=0.3.0
 BASE=https://github.com/Huanfiy/ai-usage/releases/download/v${VER}
 curl -fLO "${BASE}/ai-usage-${VER}-x86_64-unknown-linux-musl.tar.gz"
 curl -fLO "${BASE}/SHA256SUMS"

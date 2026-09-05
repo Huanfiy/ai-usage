@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-agent"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ai-usage-parsers",
  "ai-usage-protocol",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-dash"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ai-usage-protocol",
  "anyhow",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-parsers"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "ai-usage-protocol",
  "chrono",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "ai-usage-protocol"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "hex",
