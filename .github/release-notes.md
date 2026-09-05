@@ -1,17 +1,17 @@
 <!-- 每次发布就地替换「本次变更」一节，历史版本由 git log 与既往 Release 承载，本文件不累积。 -->
-## 本次变更（v0.3.0）
+## 本次变更（v0.4.0）
 
-**破坏性变更：接入方式改为「申请 — 人工批准 — 领取」。**
+**新增 Pi agent 用量统计。**
 
-- `ai-usage-agent init` 去掉 `--token`。填 `--url` 后打印确认码，在看板设置页对照批准，agent 轮询领取 ingest token。申请 10 分钟过期，带限流。采集端本机面板新增看板地址走同一条流程。
-- `ai-usage-dash token create` 移除。`token list` / `revoke` / `delete` 保留。
-- 空库首次 `ai-usage-dash serve` 不再自动签发并打印本机 ingest token。本机接入同样要人批。
+- 只读解析 `~/.pi/agent/sessions/` 下的 JSONL 会话文件，支持 `PI_CODING_AGENT_DIR` 与 `PI_CODING_AGENT_SESSION_DIR` 覆盖路径。
+- 统计 Pi 的 input、output、cache read、cache write、reasoning token，并按模型、项目和 UTC 半小时聚合。
+- 支持会话明细、增量解析、缓存、分支历史和压缩摘要用量。
+- `cursor-agent` provider 不计 token，Pi fork / clone 会话保留明细但不计 token，避免重复统计。
+- 更新采集端面板图标、工具筛选和解析边界文档。
 
-看板仍然不主动连接宿主机、不向采集端下发配置：token 由 agent 主动拉取。
+**看板价目表热更新**：设置页新增「更新价目表」按钮，刷新后立即生效，无需重启 dash。
 
-**从 v0.2.0 升级**：配置里已有的 token 继续有效，不必重新接入。`agent init` 遇到已接入的地址会跳过申请直接同步。
-
-**版本号修正**：v0.1.0 与 v0.2.0 的二进制内部版本都印成 `0.1.0`。本版起 `--version` 和 `/v1/health` 与 tag 一致，发布工作流会校验，不一致直接失败。
+**从 v0.3.0 升级**：已有配置、接入 token 和历史数据继续有效，ingest schema 仍为 1。先升级 dash，再升级 agent，首次同步会导入已有 Pi 日志。若先升级了 agent，升级 dash 后执行 `ai-usage-agent sync --full` 补报会话；多目标配置可用 `--url <看板地址>` 限定补报目标。
 
 ---
 
