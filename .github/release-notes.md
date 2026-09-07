@@ -1,17 +1,24 @@
 <!-- 每次发布就地替换「本次变更」一节，历史版本由 git log 与既往 Release 承载，本文件不累积。 -->
-## 本次变更（v0.4.0）
+## 本次变更（v0.5.0）
 
-**新增 Pi agent 用量统计。**
+**采集端：Cursor 账号设置页。**
 
-- 只读解析 `~/.pi/agent/sessions/` 下的 JSONL 会话文件，支持 `PI_CODING_AGENT_DIR` 与 `PI_CODING_AGENT_SESSION_DIR` 覆盖路径。
-- 统计 Pi 的 input、output、cache read、cache write、reasoning token，并按模型、项目和 UTC 半小时聚合。
-- 支持会话明细、增量解析、缓存、分支历史和压缩摘要用量。
-- `cursor-agent` provider 不计 token，Pi fork / clone 会话保留明细但不计 token，避免重复统计。
-- 更新采集端面板图标、工具筛选和解析边界文档。
+- 每个账号独立设置：面板打开时的套餐用量自动刷新可开关、可配周期。
+- 登录会话逐条锁定为可信设备；可开关、可配周期的后台会话监控，自动撤销未锁定的新会话。检查状态与事件落 `cache/cursor-session-guard.json`，面板可查，不含凭证。
 
-**看板价目表热更新**：设置页新增「更新价目表」按钮，刷新后立即生效，无需重启 dash。
+**看板：Cursor 账号卡片可归档。**
 
-**从 v0.3.0 升级**：已有配置、接入 token 和历史数据继续有效，ingest schema 仍为 1。先升级 dash，再升级 agent，首次同步会导入已有 Pi 日志。若先升级了 agent，升级 dash 后执行 `ai-usage-agent sync --full` 补报会话；多目标配置可用 `--url <看板地址>` 限定补报目标。
+- 卡片上「归档」手动折叠；归档之后出现新用量桶自动恢复，快照上报不解归档。
+- 快照超过 `cursor_stale_days`（dash.toml，默认 7 天）未更新的账号自动折叠到「已归档」区。
+- 已归档卡片展示该账号有记录以来的累计消耗与 token 数（费用为估算）。
+
+**Cursor 套餐卡片简化（破坏性）。**
+
+- API / Auto / Bot 只标百分比；新增「已用量」= `plan.used` + `breakdown.bonus`，即本账期总消耗；「凭证有效期剩余」改为「凭证剩余」。
+- 信用余额（credit grants）链路整体移除：不再请求 `get-client-visible-credit-grants`，面板与看板不再展示，`cache/cursor-credits.json` 不再写入，可手动删除。
+- 套餐快照精简为百分比、总消耗、账期与 Bot 周期字段；`subscription_status`、`plan_limit`、`included_cents`、`bonus_cents`、`auto_used`、`auto_limit`、`credit_*` 从 ingest 载荷与看板 API 移除。
+
+**从 v0.4.0 升级**：已有配置、接入 token 和历史数据继续有效，ingest schema 仍为 1；看板库启动时自动补列（`total_used_cents`、`archived_at`），旧列保留不读。先升级 dash，再升级 agent：新 agent 对旧 dash 只是少显示「已用量」，旧 agent 对新 dash 会被忽略已移除字段，两侧都不报错。
 
 ---
 
