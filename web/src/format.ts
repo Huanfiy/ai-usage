@@ -40,9 +40,23 @@ export function fmtDur(s: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
+function localTime(iso: string): Date | null {
+  const d = new Date(iso)
+  return Number.isFinite(d.getTime()) ? d : null
+}
+
 export function fmtTime(iso: string): string {
-  if (!iso) return ''
-  return new Date(iso).toLocaleString()
+  const d = localTime(iso)
+  if (!d) return ''
+  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/** Trend chart axis label. */
+export function fmtTimeTick(iso: string, withTime: boolean): string {
+  const d = localTime(iso)
+  if (!d) return ''
+  const date = `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`
+  return withTime ? `${date} ${pad2(d.getHours())}:${pad2(d.getMinutes())}` : date
 }
 
 /** `+08:00` / `-05:30` → minutes east of UTC. Invalid → null. */

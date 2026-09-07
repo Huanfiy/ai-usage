@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { SeriesPoint } from '../api'
-import { fmtAxisTokens, fmtInt, fmtTime, fmtUsd } from '../format'
+import { fmtAxisTokens, fmtInt, fmtTime, fmtTimeTick, fmtUsd } from '../format'
 
 const props = defineProps<{ points: SeriesPoint[]; rangeLabel?: string }>()
 
@@ -145,11 +145,7 @@ function ticks(n: number): number[] {
 }
 
 function fmtTick(iso: string, span: number): string {
-  const d = new Date(iso)
-  if (span <= 36 * 3600 * 1000) {
-    return d.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit' })
+  return fmtTimeTick(iso, span <= 36 * 3600 * 1000)
 }
 
 const hovered = computed(() => {
