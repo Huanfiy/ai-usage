@@ -19,8 +19,6 @@ pub struct CursorAccountSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subscription_status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_cycle_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_percent: Option<f64>,
@@ -35,95 +33,16 @@ pub struct CursorAccountSnapshot {
     pub bot_next_reset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_available: Option<bool>,
-    /// Included API pool, cents.
+    /// 本账期总消耗（cents）：`plan.used`（包含额度内的消耗）+ `breakdown.bonus`
+    /// （超出包含额度后累计的附赠消耗）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_used: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_limit: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub included_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bonus_cents: Option<i64>,
-    /// Auto pool in cents: autoPercentUsed × breakdown.total.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_used: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_limit: Option<i64>,
-    /// 信用余额（网页 Credits 卡）：`get-client-visible-credit-grants` 各 grant
-    /// 求和，cents。与 `bonus_cents`（账期内附赠池）是两回事。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_remaining_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_total_cents: Option<i64>,
-    /// 最早到期的 grant 到期时刻（RFC3339）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_expires_at: Option<String>,
-    /// grant 显示名，多条以 " / " 连接。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_label: Option<String>,
+    pub total_used_cents: Option<i64>,
 }
 
 impl CursorAccountSnapshot {
     pub fn is_empty(&self) -> bool {
-        self.membership.is_none()
-            && self.subscription_status.is_none()
-            && self.billing_cycle_end.is_none()
-            && self.api_percent.is_none()
-            && self.auto_percent.is_none()
-            && self.bot_percent.is_none()
-            && self.bot_period_start.is_none()
-            && self.bot_next_reset.is_none()
-            && self.bot_available.is_none()
-            && self.plan_used.is_none()
-            && self.plan_limit.is_none()
-            && self.included_cents.is_none()
-            && self.bonus_cents.is_none()
-            && self.auto_used.is_none()
-            && self.auto_limit.is_none()
-            && self.credit_remaining_cents.is_none()
-            && self.credit_total_cents.is_none()
-            && self.credit_expires_at.is_none()
-            && self.credit_label.is_none()
+        self == &Self::default()
     }
-}
-
-/// 把 `get-client-visible-credit-grants` 的 JSON 叠加进快照的 Credits 字段。
-/// 服务端把 int64 序列化成字符串（`"8415"`），同时兼容数字。
-/// 无 grant 时 total/remaining 置 0，区别于「没拉到」的 None。
-pub fn credit_overlay(snap: &mut CursorAccountSnapshot, v: &Value) {
-    let Some(grants) = v.get("grants").and_then(Value::as_array) else {
-        return;
-    };
-    let mut remaining = 0i64;
-    let mut total = 0i64;
-    let mut earliest_ms: Option<i64> = None;
-    let mut names = Vec::new();
-    for g in grants.iter().filter_map(Value::as_object) {
-        remaining += g
-            .get("remainingCents")
-            .and_then(as_i64_lenient)
-            .unwrap_or(0);
-        total += g.get("totalCents").and_then(as_i64_lenient).unwrap_or(0);
-        if let Some(ms) = g.get("expiresAtMs").and_then(as_i64_lenient) {
-            earliest_ms = Some(earliest_ms.map_or(ms, |cur: i64| cur.min(ms)));
-        }
-        if let Some(name) = g.get("displayName").and_then(Value::as_str) {
-            let t = name.trim();
-            if !t.is_empty() && !names.iter().any(|n| n == t) {
-                names.push(t.to_string());
-            }
-        }
-    }
-    snap.credit_remaining_cents = Some(remaining);
-    snap.credit_total_cents = Some(total);
-    snap.credit_expires_at = earliest_ms
-        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
-        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    snap.credit_label = if names.is_empty() {
-        None
-    } else {
-        Some(names.join(" / "))
-    };
 }
 
 /// 把 `GetSandUsageStatus` 的 JSON 叠加进快照的 Bot 字段。
@@ -249,21 +168,16 @@ fn usage_snapshot(usage: &serde_json::Map<String, Value>) -> CursorAccountSnapsh
             .get("autoPercentUsed")
             .and_then(as_f64)
             .or_else(|| plan.get("totalPercentUsed").and_then(as_f64));
-        snap.plan_used = plan.get("used").and_then(as_i64);
-        snap.plan_limit = plan.get("limit").and_then(as_i64);
-        if let Some(bd) = plan.get("breakdown").and_then(Value::as_object) {
-            snap.included_cents = bd.get("included").and_then(as_i64);
-            snap.bonus_cents = bd.get("bonus").and_then(as_i64);
-            snap.auto_limit = bd.get("total").and_then(as_i64).or_else(|| {
-                match (snap.included_cents, snap.bonus_cents) {
-                    (Some(a), Some(b)) => Some(a + b),
-                    (Some(a), None) => Some(a),
-                    _ => None,
-                }
-            });
-            if let (Some(pct), Some(limit)) = (snap.auto_percent, snap.auto_limit) {
-                snap.auto_used = Some(((pct / 100.0) * limit as f64).round() as i64);
-            }
+        // `plan.used` 到 limit 就封顶，之后的消耗累计在 breakdown.bonus 里随用随涨，
+        // 两者相加才是本账期真实消耗。
+        if let Some(used) = plan.get("used").and_then(as_i64) {
+            let bonus = plan
+                .get("breakdown")
+                .and_then(Value::as_object)
+                .and_then(|bd| bd.get("bonus"))
+                .and_then(as_i64)
+                .unwrap_or(0);
+            snap.total_used_cents = Some(used + bonus);
         }
     }
     if snap.auto_percent.is_none() {
@@ -305,11 +219,6 @@ fn as_i64(v: &Value) -> Option<i64> {
     v.as_i64()
         .or_else(|| v.as_u64().map(|n| n as i64))
         .or_else(|| v.as_f64().map(|n| n as i64))
-}
-
-/// int64 可能以字符串形式序列化（protobuf JSON 惯例）。
-fn as_i64_lenient(v: &Value) -> Option<i64> {
-    as_i64(v).or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
 fn as_f64(v: &Value) -> Option<f64> {
@@ -371,55 +280,26 @@ mod tests {
         assert_eq!(snap.membership.as_deref(), Some("pro"));
         assert_eq!(snap.api_percent, Some(100.0));
         assert_eq!(snap.auto_percent, Some(0.6));
-        assert_eq!(snap.plan_used, Some(2000));
-        assert_eq!(snap.plan_limit, Some(2000));
-        assert_eq!(snap.included_cents, Some(2000));
-        assert_eq!(snap.bonus_cents, Some(2716));
-        assert_eq!(snap.auto_limit, Some(4716));
-        assert_eq!(snap.auto_used, Some(28));
+        // used 2000 + bonus 2716
+        assert_eq!(snap.total_used_cents, Some(4716));
         assert_eq!(
             snap.billing_cycle_end.as_deref(),
             Some("2026-09-12T13:47:51.000Z")
-        );
-    }
-
-    #[test]
-    fn credit_overlay_sums_string_int64_and_picks_earliest_expiry() {
-        let mut snap = CursorAccountSnapshot::default();
-        credit_overlay(
-            &mut snap,
-            &serde_json::json!({
-                "grants": [
-                    {"remainingCents":"8415","totalCents":"10000","expiresAtMs":"1788462409347","displayName":"Cursor Grok 4.6 Credit"},
-                    {"remainingCents":500,"totalCents":500,"expiresAtMs":1788000000000i64,"displayName":"Promo"}
-                ]
-            }),
-        );
-        assert_eq!(snap.credit_remaining_cents, Some(8915));
-        assert_eq!(snap.credit_total_cents, Some(10500));
-        assert_eq!(
-            snap.credit_expires_at.as_deref(),
-            Some("2026-08-29T10:40:00Z")
-        );
-        assert_eq!(
-            snap.credit_label.as_deref(),
-            Some("Cursor Grok 4.6 Credit / Promo")
         );
         assert!(!snap.is_empty());
     }
 
     #[test]
-    fn credit_overlay_empty_grants_is_zero_not_none() {
-        let mut snap = CursorAccountSnapshot::default();
-        credit_overlay(&mut snap, &serde_json::json!({"grants": []}));
-        assert_eq!(snap.credit_remaining_cents, Some(0));
-        assert_eq!(snap.credit_total_cents, Some(0));
-        assert!(snap.credit_expires_at.is_none());
-        assert!(snap.credit_label.is_none());
-        // 没有 grants 键：不动
-        let mut untouched = CursorAccountSnapshot::default();
-        credit_overlay(&mut untouched, &serde_json::json!({"error": "x"}));
-        assert!(untouched.is_empty());
+    fn total_used_without_bonus_is_plain_used() {
+        let snap = snapshot_from_usage_json(&serde_json::json!({
+            "individualUsage": { "plan": { "used": 1234, "limit": 2000 } }
+        }));
+        assert_eq!(snap.total_used_cents, Some(1234));
+        // 没有 used 就不给数
+        let bare = snapshot_from_usage_json(&serde_json::json!({
+            "individualUsage": { "plan": { "breakdown": { "bonus": 500 } } }
+        }));
+        assert!(bare.total_used_cents.is_none());
     }
 
     #[test]

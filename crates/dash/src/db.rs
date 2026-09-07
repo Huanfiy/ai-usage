@@ -18,10 +18,7 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
-        migrate_session_tokens(&conn)?;
-        migrate_host_timezone(&conn)?;
-        migrate_cursor_credits(&conn)?;
-        migrate_cursor_archive(&conn)?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -103,7 +100,6 @@ CREATE TABLE IF NOT EXISTS cursor_account_usage (
   account_hash TEXT PRIMARY KEY,
   account_label TEXT NOT NULL,
   membership TEXT,
-  subscription_status TEXT,
   billing_cycle_end TEXT,
   api_percent REAL,
   auto_percent REAL,
@@ -111,16 +107,7 @@ CREATE TABLE IF NOT EXISTS cursor_account_usage (
   bot_period_start TEXT,
   bot_next_reset TEXT,
   bot_available INTEGER,
-  plan_used INTEGER,
-  plan_limit INTEGER,
-  included_cents INTEGER,
-  bonus_cents INTEGER,
-  auto_used INTEGER,
-  auto_limit INTEGER,
-  credit_remaining_cents INTEGER,
-  credit_total_cents INTEGER,
-  credit_expires_at TEXT,
-  credit_label TEXT,
+  total_used_cents INTEGER,
   fetched_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   archived_at TEXT
@@ -144,107 +131,37 @@ CREATE INDEX IF NOT EXISTS idx_rollups_day ON daily_rollups(day);
 CREATE INDEX IF NOT EXISTS idx_sessions_last ON usage_sessions(last_message_at);
 "#;
 
-fn migrate_session_tokens(conn: &Connection) -> Result<()> {
-    let existing: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(usage_sessions)")?;
-        let names = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<_>>()?;
-        names
-    };
-    for (name, sql) in [
-        (
-            "input_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "output_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "cache_read_input_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN cache_read_input_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "cache_creation_input_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "reasoning_output_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN reasoning_output_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "total_tokens",
-            "ALTER TABLE usage_sessions ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0",
-        ),
-    ] {
-        if !existing.contains(name) {
-            conn.execute(sql, [])?;
+/// 老库补列：`CREATE TABLE IF NOT EXISTS` 不会改已有表，这里逐列 `ADD COLUMN`。
+fn migrate(conn: &Connection) -> Result<()> {
+    add_missing_columns(
+        conn,
+        "usage_sessions",
+        &[
+            ("input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_read_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("cache_creation_input_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("reasoning_output_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("total_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )?;
+    add_missing_columns(conn, "hosts", &[("timezone", "TEXT")])?;
+    add_missing_columns(
+        conn,
+        "cursor_account_usage",
+        &[("total_used_cents", "INTEGER"), ("archived_at", "TEXT")],
+    )
+}
+
+fn add_missing_columns(conn: &Connection, table: &str, cols: &[(&str, &str)]) -> Result<()> {
+    let existing: std::collections::HashSet<String> = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, ty) in cols {
+        if !existing.contains(*name) {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {name} {ty}"), [])?;
         }
-    }
-    Ok(())
-}
-
-fn migrate_cursor_credits(conn: &Connection) -> Result<()> {
-    let existing: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(cursor_account_usage)")?;
-        let names = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<_>>()?;
-        names
-    };
-    for (name, sql) in [
-        (
-            "credit_remaining_cents",
-            "ALTER TABLE cursor_account_usage ADD COLUMN credit_remaining_cents INTEGER",
-        ),
-        (
-            "credit_total_cents",
-            "ALTER TABLE cursor_account_usage ADD COLUMN credit_total_cents INTEGER",
-        ),
-        (
-            "credit_expires_at",
-            "ALTER TABLE cursor_account_usage ADD COLUMN credit_expires_at TEXT",
-        ),
-        (
-            "credit_label",
-            "ALTER TABLE cursor_account_usage ADD COLUMN credit_label TEXT",
-        ),
-    ] {
-        if !existing.contains(name) {
-            conn.execute(sql, [])?;
-        }
-    }
-    Ok(())
-}
-
-fn migrate_cursor_archive(conn: &Connection) -> Result<()> {
-    let existing: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(cursor_account_usage)")?;
-        let names = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<_>>()?;
-        names
-    };
-    if !existing.contains("archived_at") {
-        conn.execute(
-            "ALTER TABLE cursor_account_usage ADD COLUMN archived_at TEXT",
-            [],
-        )?;
-    }
-    Ok(())
-}
-
-fn migrate_host_timezone(conn: &Connection) -> Result<()> {
-    let existing: std::collections::HashSet<String> = {
-        let mut stmt = conn.prepare("PRAGMA table_info(hosts)")?;
-        let names = stmt
-            .query_map([], |r| r.get::<_, String>(1))?
-            .collect::<rusqlite::Result<_>>()?;
-        names
-    };
-    if !existing.contains("timezone") {
-        conn.execute("ALTER TABLE hosts ADD COLUMN timezone TEXT", [])?;
     }
     Ok(())
 }
@@ -565,18 +482,15 @@ pub fn list_cursor_accounts(conn: &Connection, stale_days: u32) -> Result<Vec<se
     let now = chrono::Utc::now();
     let stale_after = chrono::Duration::days(i64::from(stale_days));
     let mut stmt = conn.prepare(
-        "SELECT account_hash, account_label, membership, subscription_status, billing_cycle_end,
+        "SELECT account_hash, account_label, membership, billing_cycle_end,
                 api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
-                bot_available, plan_used, plan_limit, included_cents, bonus_cents,
-                auto_used, auto_limit, fetched_at, updated_at,
-                credit_remaining_cents, credit_total_cents, credit_expires_at, credit_label,
-                archived_at
+                bot_available, total_used_cents, fetched_at, updated_at, archived_at
          FROM cursor_account_usage
          ORDER BY account_label COLLATE NOCASE",
     )?;
     let rows = stmt
         .query_map([], |r| {
-            let fetched_at = r.get::<_, String>(17)?;
+            let fetched_at = r.get::<_, String>(11)?;
             let stale = chrono::DateTime::parse_from_rfc3339(&fetched_at)
                 .map(|t| now - t.with_timezone(&chrono::Utc) > stale_after)
                 .unwrap_or(false);
@@ -584,27 +498,17 @@ pub fn list_cursor_accounts(conn: &Connection, stale_days: u32) -> Result<Vec<se
                 "account_hash": r.get::<_, String>(0)?,
                 "account_label": r.get::<_, String>(1)?,
                 "membership": r.get::<_, Option<String>>(2)?,
-                "subscription_status": r.get::<_, Option<String>>(3)?,
-                "billing_cycle_end": r.get::<_, Option<String>>(4)?,
-                "api_percent": r.get::<_, Option<f64>>(5)?,
-                "auto_percent": r.get::<_, Option<f64>>(6)?,
-                "bot_percent": r.get::<_, Option<f64>>(7)?,
-                "bot_period_start": r.get::<_, Option<String>>(8)?,
-                "bot_next_reset": r.get::<_, Option<String>>(9)?,
-                "bot_available": r.get::<_, Option<i64>>(10)?.map(|v| v != 0),
-                "plan_used": r.get::<_, Option<i64>>(11)?,
-                "plan_limit": r.get::<_, Option<i64>>(12)?,
-                "included_cents": r.get::<_, Option<i64>>(13)?,
-                "bonus_cents": r.get::<_, Option<i64>>(14)?,
-                "auto_used": r.get::<_, Option<i64>>(15)?,
-                "auto_limit": r.get::<_, Option<i64>>(16)?,
+                "billing_cycle_end": r.get::<_, Option<String>>(3)?,
+                "api_percent": r.get::<_, Option<f64>>(4)?,
+                "auto_percent": r.get::<_, Option<f64>>(5)?,
+                "bot_percent": r.get::<_, Option<f64>>(6)?,
+                "bot_period_start": r.get::<_, Option<String>>(7)?,
+                "bot_next_reset": r.get::<_, Option<String>>(8)?,
+                "bot_available": r.get::<_, Option<i64>>(9)?.map(|v| v != 0),
+                "total_used_cents": r.get::<_, Option<i64>>(10)?,
                 "fetched_at": fetched_at,
-                "updated_at": r.get::<_, String>(18)?,
-                "credit_remaining_cents": r.get::<_, Option<i64>>(19)?,
-                "credit_total_cents": r.get::<_, Option<i64>>(20)?,
-                "credit_expires_at": r.get::<_, Option<String>>(21)?,
-                "credit_label": r.get::<_, Option<String>>(22)?,
-                "archived_at": r.get::<_, Option<String>>(23)?,
+                "updated_at": r.get::<_, String>(12)?,
+                "archived_at": r.get::<_, Option<String>>(13)?,
                 "stale": stale,
             }))
         })?
@@ -659,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cursor_account_usage_gains_credit_columns() {
+    fn legacy_cursor_account_usage_gains_new_columns() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.sqlite");
         {
@@ -667,11 +571,9 @@ mod tests {
             c.execute_batch(
                 "CREATE TABLE cursor_account_usage (
                    account_hash TEXT PRIMARY KEY, account_label TEXT NOT NULL,
-                   membership TEXT, subscription_status TEXT, billing_cycle_end TEXT,
+                   membership TEXT, billing_cycle_end TEXT,
                    api_percent REAL, auto_percent REAL, bot_percent REAL,
                    bot_period_start TEXT, bot_next_reset TEXT, bot_available INTEGER,
-                   plan_used INTEGER, plan_limit INTEGER, included_cents INTEGER,
-                   bonus_cents INTEGER, auto_used INTEGER, auto_limit INTEGER,
                    fetched_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                  INSERT INTO cursor_account_usage(account_hash, account_label, fetched_at, updated_at)
                  VALUES('abc', 'a@x.com', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');",
@@ -682,9 +584,8 @@ mod tests {
         db.with(|c| {
             let rows = list_cursor_accounts(c, 7)?;
             assert_eq!(rows.len(), 1);
-            assert!(rows[0]["credit_remaining_cents"].is_null());
-            assert!(rows[0]["credit_label"].is_null());
-            // 迁移补出 archived_at 列；旧快照（2026-01-01）超过 7 天未更新即 stale
+            // 迁移补出 total_used_cents 与 archived_at 列；旧快照（2026-01-01）超过 7 天未更新即 stale
+            assert!(rows[0]["total_used_cents"].is_null());
             assert!(rows[0]["archived_at"].is_null());
             assert_eq!(rows[0]["stale"], true);
             Ok(())

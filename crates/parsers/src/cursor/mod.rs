@@ -36,8 +36,7 @@ const EXTRA_EXPIRED: &str = "会话已过期，请重新导入。";
 const CONFIGURED_ACCOUNTS: &str = "cursor-accounts";
 
 pub use extract::{
-    credit_overlay, extract_cursor_previews, sand_overlay, snapshot_from_usage_json,
-    CursorAccountSnapshot,
+    extract_cursor_previews, sand_overlay, snapshot_from_usage_json, CursorAccountSnapshot,
 };
 
 #[derive(Debug, Clone)]
@@ -126,8 +125,6 @@ pub fn fetch_plan_snapshot(access_token: &str) -> Option<CursorAccountSnapshot> 
 /// 额外尝试 Bot/Sand 配额并叠加进快照：`type=web` 的凭证预知调不了原生
 /// RPC，直接跳过；其余失败（401/网络）也只是 Bot 字段留空，不算错误。
 /// Sand 原始 JSON 以 `botUsage` 键并入返回的 raw，供面板查看。
-///
-/// 信用余额不在这里拉（面板每分钟刷一次太频繁），见 [`fetch_credit_grants`]。
 pub fn fetch_plan_with_raw(
     access_token: &str,
 ) -> Result<(CursorAccountSnapshot, serde_json::Value), PlanFetchError> {
@@ -147,16 +144,6 @@ pub fn fetch_plan_with_raw(
         }
     }
     Ok((snap, v))
-}
-
-/// 信用余额（网页 Credits 卡）：`POST get-client-visible-credit-grants` 的原始
-/// JSON。`usage-summary` 里没有这项。余额变化慢，调用方按 Cursor 同步周期
-/// （与全量 CSV 同频）拉取即可；叠加进快照用 [`credit_overlay`]。
-pub fn fetch_credit_grants(access_token: &str) -> Result<serde_json::Value, PlanFetchError> {
-    let jwt = extract_cursor_jwt(access_token).ok_or(PlanFetchError::Token)?;
-    let claims = jwt::decode_claims(&jwt).ok_or(PlanFetchError::Token)?;
-    let raw = remote::fetch_credit_grants(&claims.sub, &jwt).map_err(map_fetch_err)?;
-    serde_json::from_str(&raw).map_err(|_| PlanFetchError::Parse)
 }
 
 fn map_fetch_err(err: remote::FetchError) -> PlanFetchError {
@@ -429,10 +416,6 @@ mod tests {
             PlanFetchError::Token
         );
         assert!(fetch_plan_snapshot("nope").is_none());
-        assert_eq!(
-            fetch_credit_grants("nope").unwrap_err(),
-            PlanFetchError::Token
-        );
     }
 
     #[test]

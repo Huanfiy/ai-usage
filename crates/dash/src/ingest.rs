@@ -97,17 +97,13 @@ pub fn ingest(
 fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO cursor_account_usage(
-            account_hash, account_label, membership, subscription_status, billing_cycle_end,
+            account_hash, account_label, membership, billing_cycle_end,
             api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
-            bot_available, plan_used, plan_limit, included_cents, bonus_cents,
-            auto_used, auto_limit, fetched_at, updated_at,
-            credit_remaining_cents, credit_total_cents, credit_expires_at, credit_label)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,
-                ?20,?21,?22,?23)
+            bot_available, total_used_cents, fetched_at, updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
          ON CONFLICT(account_hash) DO UPDATE SET
             account_label=excluded.account_label,
             membership=excluded.membership,
-            subscription_status=excluded.subscription_status,
             billing_cycle_end=excluded.billing_cycle_end,
             api_percent=excluded.api_percent,
             auto_percent=excluded.auto_percent,
@@ -115,24 +111,14 @@ fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> 
             bot_period_start=excluded.bot_period_start,
             bot_next_reset=excluded.bot_next_reset,
             bot_available=excluded.bot_available,
-            plan_used=excluded.plan_used,
-            plan_limit=excluded.plan_limit,
-            included_cents=excluded.included_cents,
-            bonus_cents=excluded.bonus_cents,
-            auto_used=excluded.auto_used,
-            auto_limit=excluded.auto_limit,
+            total_used_cents=excluded.total_used_cents,
             fetched_at=excluded.fetched_at,
-            updated_at=excluded.updated_at,
-            credit_remaining_cents=excluded.credit_remaining_cents,
-            credit_total_cents=excluded.credit_total_cents,
-            credit_expires_at=excluded.credit_expires_at,
-            credit_label=excluded.credit_label
+            updated_at=excluded.updated_at
          WHERE excluded.fetched_at >= cursor_account_usage.fetched_at",
         params![
             u.account_hash,
             u.account_label,
             u.membership,
-            u.subscription_status,
             u.billing_cycle_end,
             u.api_percent,
             u.auto_percent,
@@ -140,18 +126,9 @@ fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> 
             u.bot_period_start,
             u.bot_next_reset,
             u.bot_available.map(|b| b as i64),
-            u.plan_used,
-            u.plan_limit,
-            u.included_cents,
-            u.bonus_cents,
-            u.auto_used,
-            u.auto_limit,
+            u.total_used_cents,
             u.fetched_at.to_rfc3339(),
             now,
-            u.credit_remaining_cents,
-            u.credit_total_cents,
-            u.credit_expires_at,
-            u.credit_label
         ],
     )?;
     Ok(())
@@ -671,10 +648,7 @@ mod tests {
                 api_percent: Some(pct),
                 bot_percent: Some(0.5),
                 bot_available: Some(true),
-                credit_remaining_cents: Some(8415),
-                credit_total_cents: Some(10000),
-                credit_expires_at: Some("2026-09-03T19:06:49Z".into()),
-                credit_label: Some("Cursor Grok 4.6 Credit".into()),
+                total_used_cents: Some(100990),
                 fetched_at: chrono::DateTime::parse_from_rfc3339(fetched)
                     .unwrap()
                     .with_timezone(&Utc),
@@ -732,10 +706,7 @@ mod tests {
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0]["bot_available"], true);
             assert_eq!(rows[0]["bot_percent"], 0.5);
-            assert_eq!(rows[0]["credit_remaining_cents"], 8415);
-            assert_eq!(rows[0]["credit_total_cents"], 10000);
-            assert_eq!(rows[0]["credit_expires_at"], "2026-09-03T19:06:49Z");
-            assert_eq!(rows[0]["credit_label"], "Cursor Grok 4.6 Credit");
+            assert_eq!(rows[0]["total_used_cents"], 100990);
             Ok(())
         })
         .unwrap();

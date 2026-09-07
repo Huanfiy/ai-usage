@@ -356,7 +356,6 @@
       background: #161c24;
     }
     .icon-btn svg { width: 15px; height: 15px; display: block; }
-    .icon-btn.attn { color: var(--amber); border-color: #5a4630; }
     .icon-btn.spin {
       color: var(--mint);
       border-color: var(--mint);
@@ -513,20 +512,6 @@
     .set-sec .sess-row { background: var(--bg-elev); }
     #guard-status { font-size: 12px; margin-top: 8px; }
     .guard-err { color: var(--rose); }
-    .credit-row {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #0b0e12;
-    }
-    .credit-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-    .credit-name { color: var(--text); font-size: 13px; }
-    .credit-val { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .credit-exp { font-size: 11px; color: var(--muted); }
-    .credit-exp.soon { color: var(--amber); }
     .empty {
       color: var(--muted);
       padding: 28px 8px;
@@ -918,20 +903,6 @@
     </form>
   </dialog>
 
-  <dialog id="credit-dlg" aria-labelledby="credit-title">
-    <div class="dlg-card">
-      <div class="json-head">
-        <div>
-          <h3 id="credit-title">信用余额</h3>
-          <p class="dlg-lead">对应 cursor.com 账单页 Credits：有到期日、跨账期自动抵扣用量，与套餐附赠池不同。随 Cursor 同步周期更新。</p>
-        </div>
-        <button type="button" class="icon-btn" id="credit-close" title="关闭" aria-label="关闭"></button>
-      </div>
-      <div class="sess-list" id="credit-list"></div>
-      <div class="meta" id="credit-foot"></div>
-    </div>
-  </dialog>
-
   <script>
     const $ = (id) => document.getElementById(id);
     let fileText = "";
@@ -968,12 +939,6 @@
         "M16 3h1a2 2 0 0 1 2 2v5a2 2 0 0 0 2 2 2 2 0 0 0-2 2v5a2 2 0 0 1-2 2h-1",
       ],
       x: ["M18 6 6 18", "M6 6l12 12"],
-      coins: [
-        "M8 8a6 6 0 1 0 12 0A6 6 0 1 0 8 8z",
-        "M18.09 10.37A6 6 0 1 1 10.34 18",
-        "M7 6h1v4",
-        "M16.71 13.88l.7.71-2.82 2.82",
-      ],
       gear: [
         "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z",
         "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
@@ -1008,14 +973,14 @@
       const days = Math.floor(ms / 86400000);
       const title = "凭证到期 " + fmtSessTime(new Date(exp * 1000).toISOString());
       if (ms <= 0) return { text: "凭证已过期", title, kind: "bad" };
-      return { text: "凭证有效期剩余 " + days + " 天", title, kind: days <= 7 ? "warn" : "" };
+      return { text: "凭证剩余 " + days + " 天", title, kind: days <= 7 ? "warn" : "" };
     }
     // 到某时刻的倒计时：≥1 天显示 d/h，<1 天显示 h/m；已过则「待重置」
-    function fmtCountdown(iso, expiredText) {
+    function fmtCountdown(iso) {
       if (!iso) return null;
       const ms = new Date(iso).getTime() - Date.now();
       if (Number.isNaN(ms)) return null;
-      if (ms <= 0) return { text: expiredText || "待重置", soon: true, expired: true };
+      if (ms <= 0) return { text: "待重置", soon: true };
       const h = Math.floor(ms / 3600000);
       const d = Math.floor(h / 24);
       const text = d >= 1 ? d + "d " + (h % 24) + "h" : h >= 1 ? h + "h " + Math.floor((ms % 3600000) / 60000) + "m" : Math.max(1, Math.floor(ms / 60000)) + "m";
@@ -1029,27 +994,17 @@
       if (cents == null || Number.isNaN(Number(cents))) return null;
       return "$" + (Number(cents) / 100).toFixed(2);
     }
-    // opts.resetAt：中间列显示到重置时刻的倒计时；opts.used / opts.limit（美分）：
-    // 右侧显示「用量/额度 · 百分比」，没有金额时只显示百分比，同一字体右对齐。
-    function meter(label, pct, opts) {
+    // resetAt：中间列显示到重置时刻的倒计时；右侧只显示百分比。
+    function meter(label, pct, resetAt) {
       if (pct == null) return null;
-      opts = opts || {};
       const box = el("div", "meter");
       const row = el("div", "meter-row");
       row.appendChild(el("span", "", label));
-      const cd = fmtCountdown(opts.resetAt);
+      const cd = fmtCountdown(resetAt);
       const reset = el("span", "meter-reset" + (cd && cd.soon ? " soon" : ""), cd ? "重置 " + cd.text : "");
-      if (cd) reset.title = "重置于 " + fmtSessTime(opts.resetAt);
+      if (cd) reset.title = "重置于 " + fmtSessTime(resetAt);
       row.appendChild(reset);
-      const parts = [];
-      const used = fmtUsd(opts.used);
-      const limit = fmtUsd(opts.limit);
-      if (used && limit) parts.push(used + "/" + limit);
-      else if (used) parts.push(used);
-      parts.push(fmtPct(pct));
-      const val = el("b", "meter-val", parts.join(" · "));
-      if (used && opts.title) val.title = opts.title;
-      row.appendChild(val);
+      row.appendChild(el("b", "meter-val", fmtPct(pct)));
       box.appendChild(row);
       const bar = el("div", "bar" + (pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""));
       const i = el("i");
@@ -1344,13 +1299,6 @@
       jsonBtn.onclick = () => openJson(a);
       tools.appendChild(refreshBtn);
       tools.appendChild(jsonBtn);
-      if (a.credits) {
-        const soon = a.credits.expires_at && new Date(a.credits.expires_at).getTime() - Date.now() < 3 * 86400000;
-        const creditBtn = iconBtn("coins", "信用余额 " + fmtUsd(a.credits.remaining_cents) + " / " + fmtUsd(a.credits.total_cents));
-        if (soon) creditBtn.classList.add("attn");
-        creditBtn.onclick = () => openCredits(a);
-        tools.appendChild(creditBtn);
-      }
       if (a.stored || a.from_ide) {
         const setBtn = iconBtn("gear", "设置");
         setBtn.onclick = () => openSettings(a);
@@ -1360,10 +1308,6 @@
       top.appendChild(head);
       const chips = el("div", "chips");
       if (a.membership) chips.appendChild(el("span", "chip on", a.membership));
-      if (a.subscription_status) {
-        const st = String(a.subscription_status);
-        chips.appendChild(el("span", "chip" + (st === "active" ? " on" : ""), st));
-      }
       if (a.from_ide) chips.appendChild(el("span", "chip warn", "本机 IDE"));
       if (a.token_type === "web") {
         const c = el("span", "chip", "web 凭证");
@@ -1385,22 +1329,12 @@
       top.appendChild(chips);
       card.appendChild(top);
 
-      // API：plan.used / plan.limit（套餐包含额度）；Auto：autoPercent × (included+bonus)
-      // 换算的美分 / 总池；Bot 只有百分比。账期与 Bot 周期的重置倒计时放在各条中间。
-      const apiMeter = meter("API", a.api_percent, {
-        resetAt: a.billing_cycle_end,
-        used: a.plan_used,
-        limit: a.plan_limit,
-        title: "套餐包含额度：已用 / 额度（usage-summary plan.used / plan.limit）",
-      });
-      const autoMeter = meter("Auto", a.auto_percent, {
-        resetAt: a.billing_cycle_end,
-        used: a.auto_used,
-        limit: a.auto_limit,
-        title: "Auto 池：包含额度 + 附赠池的合计，用量按 autoPercentUsed 换算",
-      });
-      const botMeter = a.token_type === "web" ? null : meter("Bot", a.bot_percent, { resetAt: a.bot_next_reset });
-      if (apiMeter || autoMeter || botMeter || a.bonus_cents) {
+      // API / Auto / Bot 只标百分比；账期与 Bot 周期的重置倒计时放在各条中间。
+      const apiMeter = meter("API", a.api_percent, a.billing_cycle_end);
+      const autoMeter = meter("Auto", a.auto_percent, a.billing_cycle_end);
+      const botMeter = a.token_type === "web" ? null : meter("Bot", a.bot_percent, a.bot_next_reset);
+      const used = fmtUsd(a.total_used_cents);
+      if (apiMeter || autoMeter || botMeter || used) {
         const box = el("div", "usage");
         if (apiMeter) box.appendChild(apiMeter);
         if (autoMeter) box.appendChild(autoMeter);
@@ -1410,9 +1344,9 @@
           note.title = "原生 RPC 只认 IDE 原生 access token；用「导入当前 IDE 登录」或粘贴原生 token 可获得 Bot 用量";
           box.appendChild(note);
         }
-        if (a.bonus_cents) {
-          const meta = el("div", "meta", "附赠池 " + fmtUsd(a.bonus_cents));
-          meta.title = "附赠池：本账期内随套餐附赠的额外用量，随账期重置；与有到期日的信用余额不同";
+        if (used) {
+          const meta = el("div", "meta", "已用量 " + used);
+          meta.title = "本账期总消耗：包含额度内已用（plan.used）+ 超出后累计的附赠消耗（breakdown.bonus），随账期重置";
           box.appendChild(meta);
         }
         card.appendChild(box);
@@ -1829,65 +1763,6 @@
       jsonHash = null;
       if ($("json-dlg").open) $("json-dlg").close();
     }
-    // 服务端 int64 以字符串返回，这里统一转数
-    function centsOf(v) {
-      if (v == null) return null;
-      const n = Number(v);
-      return Number.isNaN(n) ? null : n;
-    }
-    function msOf(v) {
-      const n = centsOf(v);
-      return n == null ? null : new Date(n).toISOString();
-    }
-    function openCredits(a) {
-      const c = a.credits;
-      if (!c) return;
-      $("credit-title").textContent = "信用余额 · " + (a.account_label || a.account_hash);
-      const box = $("credit-list");
-      box.textContent = "";
-      const grants = Array.isArray(c.grants) ? c.grants : [];
-      if (!grants.length) {
-        box.appendChild(el("div", "sess-empty", "没有信用额度"));
-      }
-      grants.forEach((g) => {
-        const remaining = centsOf(g.remainingCents);
-        const total = centsOf(g.totalCents);
-        const expIso = msOf(g.expiresAtMs);
-        const row = el("div", "credit-row");
-        const head = el("div", "credit-head");
-        head.appendChild(el("span", "credit-name", g.displayName || "Credit"));
-        head.appendChild(el("span", "credit-val",
-          (fmtUsd(remaining) || "—") + " / " + (fmtUsd(total) || "—")
-          + (total ? " · 剩 " + Math.round((remaining / total) * 100) + "%" : "")));
-        row.appendChild(head);
-        if (total) {
-          const usedPct = Math.max(0, Math.min(100, 100 - (remaining / total) * 100));
-          const bar = el("div", "bar" + (usedPct >= 90 ? " hot" : usedPct >= 70 ? " warn" : ""));
-          const i = el("i");
-          i.style.width = usedPct + "%";
-          bar.appendChild(i);
-          row.appendChild(bar);
-        }
-        if (expIso) {
-          const cd = fmtCountdown(expIso, "已到期");
-          const tail = !cd ? "" : cd.expired ? "（已到期）" : "（剩 " + cd.text + "）";
-          const exp = el("div", "credit-exp" + (cd && cd.soon ? " soon" : ""), "到期 " + fmtSessTime(expIso) + tail);
-          row.appendChild(exp);
-        }
-        box.appendChild(row);
-      });
-      const foot = [];
-      if (grants.length > 1) foot.push("合计 " + fmtUsd(c.remaining_cents) + " / " + fmtUsd(c.total_cents));
-      foot.push("更新于 " + fmtWhen(c.fetched_at) + " · 随 Cursor 同步周期拉取");
-      $("credit-foot").textContent = foot.join(" · ");
-      $("credit-dlg").showModal();
-    }
-    $("credit-close").appendChild(svgIcon(ICONS.x));
-    $("credit-close").onclick = () => $("credit-dlg").close();
-    $("credit-dlg").addEventListener("click", (e) => {
-      if (e.target === $("credit-dlg")) $("credit-dlg").close();
-    });
-
     // —— 账号设置页：自动刷新 + 登录会话（锁定 / 监控） ——
     let settingsHash = null;
     let setBusy = false;       // PUT 在途时不用 status 回填复选框

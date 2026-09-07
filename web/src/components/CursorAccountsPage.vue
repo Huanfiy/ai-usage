@@ -167,44 +167,6 @@ function countdown(iso: string | null | undefined): { text: string; soon: boolea
   return { text, soon: ms < 86_400_000 }
 }
 
-// 右侧数值：「用量/额度 · 百分比」；没有金额时只显示百分比
-function meterValue(pct: number | null | undefined, used?: number | null, limit?: number | null): string {
-  const parts: string[] = []
-  const u = usd(used)
-  const l = usd(limit)
-  if (u && l) parts.push(`${u}/${l}`)
-  else if (u) parts.push(u)
-  parts.push(pctText(pct))
-  return parts.join(' · ')
-}
-
-// 信用余额（cursor.com 账单页 Credits）：与附赠池不同，有到期日、跨账期扣减
-function hasCredit(a: CursorAccountRow): boolean {
-  return a.credit_total_cents != null && a.credit_total_cents > 0
-}
-
-const creditOpen = ref('')
-function toggleCredit(a: CursorAccountRow) {
-  creditOpen.value = creditOpen.value === a.account_hash ? '' : a.account_hash
-}
-
-function creditUsedPct(a: CursorAccountRow): number | null {
-  const total = a.credit_total_cents ?? 0
-  if (total <= 0) return null
-  return 100 - ((a.credit_remaining_cents ?? 0) / total) * 100
-}
-
-function creditTitle(a: CursorAccountRow): string {
-  const prefix = a.credit_label ? `${a.credit_label}：` : ''
-  return `${prefix}${usd(a.credit_remaining_cents)} / ${usd(a.credit_total_cents)}，自动抵扣用量，对应 cursor.com 账单页 Credits`
-}
-
-function creditSoon(a: CursorAccountRow): boolean {
-  if (!a.credit_expires_at) return false
-  const ms = new Date(a.credit_expires_at).getTime() - Date.now()
-  return !Number.isNaN(ms) && ms < 3 * 86_400_000
-}
-
 const USAGE_DAYS = 30
 
 // 悬浮时按需拉取该账号（acct:<hash>）近 30 天的模型分布与费用估算
@@ -260,7 +222,7 @@ function onLeave() {
       </div>
       <p class="lead">
         快照由各采集端在 Cursor 同步周期拉取并上报（API / Auto 来自 usage-summary，Bot 来自原生
-        RPC，信用余额来自 credit-grants），展示的是当前状态，不随看板时间范围筛选变化。超过
+        RPC），展示的是当前状态，不随看板时间范围筛选变化。超过
         {{ staleDays }} 天未上报的账号自动折叠到「已归档」。
       </p>
 
@@ -283,11 +245,6 @@ function onLeave() {
             <div class="acct-email" :title="a.account_label">{{ a.account_label }}</div>
             <div class="acct-chips">
               <span v-if="a.membership" class="tag on">{{ a.membership }}</span>
-              <span
-                v-if="a.subscription_status"
-                class="tag"
-                :class="{ on: a.subscription_status === 'active' }"
-              >{{ a.subscription_status }}</span>
             </div>
           </div>
 
@@ -300,7 +257,7 @@ function onLeave() {
                   :class="{ soon: countdown(a.billing_cycle_end)?.soon }"
                   :title="a.billing_cycle_end ? `账期重置于 ${fmtTime(a.billing_cycle_end)}` : undefined"
                 >{{ countdown(a.billing_cycle_end) ? `重置 ${countdown(a.billing_cycle_end)!.text}` : '' }}</span>
-                <b class="val" title="套餐包含额度：已用 / 额度（plan.used / plan.limit）">{{ meterValue(a.api_percent, a.plan_used, a.plan_limit) }}</b>
+                <b class="val">{{ pctText(a.api_percent) }}</b>
               </div>
               <div class="bar" :class="barClass(a.api_percent)"><i :style="{ width: barWidth(a.api_percent) }" /></div>
             </div>
@@ -312,7 +269,7 @@ function onLeave() {
                   :class="{ soon: countdown(a.billing_cycle_end)?.soon }"
                   :title="a.billing_cycle_end ? `账期重置于 ${fmtTime(a.billing_cycle_end)}` : undefined"
                 >{{ countdown(a.billing_cycle_end) ? `重置 ${countdown(a.billing_cycle_end)!.text}` : '' }}</span>
-                <b class="val" title="Auto 池：包含额度 + 附赠池的合计，用量按 autoPercentUsed 换算">{{ meterValue(a.auto_percent, a.auto_used, a.auto_limit) }}</b>
+                <b class="val">{{ pctText(a.auto_percent) }}</b>
               </div>
               <div class="bar" :class="barClass(a.auto_percent)"><i :style="{ width: barWidth(a.auto_percent) }" /></div>
             </div>
@@ -324,7 +281,7 @@ function onLeave() {
                   :class="{ soon: countdown(a.bot_next_reset)?.soon }"
                   :title="a.bot_next_reset ? `Bot 周期重置于 ${fmtTime(a.bot_next_reset)}` : undefined"
                 >{{ countdown(a.bot_next_reset) ? `重置 ${countdown(a.bot_next_reset)!.text}` : '' }}</span>
-                <b class="val">{{ meterValue(a.bot_percent) }}</b>
+                <b class="val">{{ pctText(a.bot_percent) }}</b>
               </div>
               <div class="bar" :class="barClass(a.bot_percent)"><i :style="{ width: barWidth(a.bot_percent) }" /></div>
             </div>
@@ -334,29 +291,10 @@ function onLeave() {
           </div>
 
           <div
-            v-if="a.bonus_cents"
+            v-if="usd(a.total_used_cents)"
             class="meta"
-            title="附赠池：本账期内随套餐附赠的额外用量，随账期重置；与信用余额不同"
-          >附赠池 {{ usd(a.bonus_cents) }}</div>
-          <div v-if="hasCredit(a)" class="credit">
-            <button
-              type="button"
-              class="tag credit-btn"
-              :class="{ soon: creditSoon(a) }"
-              :title="creditTitle(a)"
-              @click.stop="toggleCredit(a)"
-            >{{ creditOpen === a.account_hash ? '收起信用余额' : '信用余额' }}</button>
-            <div v-if="creditOpen === a.account_hash" class="credit-box">
-              <div class="credit-head">
-                <span class="credit-name">{{ a.credit_label || 'Credit' }}</span>
-                <b class="credit-val">{{ usd(a.credit_remaining_cents) }} / {{ usd(a.credit_total_cents) }}</b>
-              </div>
-              <div class="bar" :class="barClass(creditUsedPct(a))"><i :style="{ width: barWidth(creditUsedPct(a)) }" /></div>
-              <div v-if="a.credit_expires_at" class="credit-exp" :class="{ soon: creditSoon(a) }">
-                到期 {{ fmtTime(a.credit_expires_at) }}
-              </div>
-            </div>
-          </div>
+            title="本账期总消耗：包含额度内已用（plan.used）+ 超出后累计的附赠消耗（breakdown.bonus），随账期重置"
+          >已用量 {{ usd(a.total_used_cents) }}</div>
           <div class="foot">
             <span>快照 {{ fmtTime(a.fetched_at) }}</span>
             <button
@@ -615,58 +553,6 @@ function onLeave() {
 .meta {
   color: var(--muted);
   font-size: 12px;
-}
-.meta.soon {
-  color: var(--amber);
-}
-.credit {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-start;
-}
-.credit-btn {
-  cursor: pointer;
-}
-.credit-btn:hover {
-  border-color: #3d4b5e;
-  color: var(--text);
-}
-.credit-btn.soon {
-  border-color: #5a4630;
-  color: var(--amber);
-}
-.credit-box {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg-elev);
-}
-.credit-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
-}
-.credit-name {
-  font-size: 12px;
-  color: var(--text);
-}
-.credit-val {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.credit-exp {
-  font-size: 11px;
-  color: var(--muted);
-}
-.credit-exp.soon {
-  color: var(--amber);
 }
 .foot {
   margin-top: auto;

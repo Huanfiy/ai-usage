@@ -70,7 +70,6 @@ export type CursorAccountRow = {
   account_hash: string
   account_label: string
   membership?: string | null
-  subscription_status?: string | null
   billing_cycle_end?: string | null
   api_percent?: number | null
   auto_percent?: number | null
@@ -78,16 +77,8 @@ export type CursorAccountRow = {
   bot_period_start?: string | null
   bot_next_reset?: string | null
   bot_available?: boolean | null
-  plan_used?: number | null
-  plan_limit?: number | null
-  included_cents?: number | null
-  bonus_cents?: number | null
-  auto_used?: number | null
-  auto_limit?: number | null
-  credit_remaining_cents?: number | null
-  credit_total_cents?: number | null
-  credit_expires_at?: string | null
-  credit_label?: string | null
+  /** 本账期总消耗（美分）：plan.used + breakdown.bonus */
+  total_used_cents?: number | null
   fetched_at: string
   updated_at: string
   archived_at?: string | null

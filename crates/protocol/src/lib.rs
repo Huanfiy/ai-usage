@@ -76,8 +76,6 @@ pub struct CursorAccountUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subscription_status: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_cycle_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_percent: Option<f64>,
@@ -92,29 +90,9 @@ pub struct CursorAccountUsage {
     pub bot_next_reset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bot_available: Option<bool>,
-    /// Included API pool, cents.
+    /// 本账期总消耗（cents）：`plan.used` + `breakdown.bonus`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_used: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_limit: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub included_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bonus_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_used: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_limit: Option<i64>,
-    /// 信用余额（网页 Credits 卡，cents）：独立于 `bonus_cents` 附赠池，
-    /// 有到期日、跨账期扣减。additive，旧 agent 不发送。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_remaining_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_total_cents: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_expires_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credit_label: Option<String>,
+    pub total_used_cents: Option<i64>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -122,7 +100,6 @@ impl CursorAccountUsage {
     pub fn normalize(mut self) -> Self {
         self.account_hash = clamp(&self.account_hash, 64);
         self.account_label = clamp(&self.account_label, 200);
-        self.credit_label = self.credit_label.map(|s| clamp(&s, 200));
         self
     }
 }
