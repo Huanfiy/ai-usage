@@ -4,6 +4,7 @@ mod cursor_credits;
 mod daemon;
 mod join;
 mod panel;
+mod session_guard;
 mod state;
 mod sync;
 mod xdg;

@@ -28,8 +28,35 @@ pub struct StoredAccount {
     /// None = 全部历史。新加入账号默认为加入时刻（云端 CSV 是全量导出）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_since: Option<String>,
+    /// 面板打开时是否自动刷新套餐用量。
+    #[serde(default = "default_true")]
+    pub auto_refresh: bool,
+    /// 套餐用量自动刷新周期（30s / 5m / 2h）。
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: String,
+    /// 会话监控开关：daemon 按周期核对登录会话，自动下线未锁定的。
+    #[serde(default)]
+    pub session_guard: bool,
+    /// 会话监控轮询周期。
+    #[serde(default = "default_guard_interval")]
+    pub guard_interval: String,
+    /// 锁定（可信）的会话 id；监控只下线不在此列表的会话。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locked_sessions: Vec<String>,
     #[serde(flatten, default)]
     pub snapshot: CursorAccountSnapshot,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+pub fn default_refresh_interval() -> String {
+    "300s".into()
+}
+
+pub fn default_guard_interval() -> String {
+    "60s".into()
 }
 
 pub fn path(data_dir: &Path) -> PathBuf {
@@ -87,6 +114,11 @@ pub fn upsert(data_dir: &Path, preview: &CursorTokenPreview) -> Result<StoredAcc
         access_token: preview.access_token.clone(),
         added_at: Some(now.clone()),
         report_since: Some(now),
+        auto_refresh: true,
+        refresh_interval: default_refresh_interval(),
+        session_guard: false,
+        guard_interval: default_guard_interval(),
+        locked_sessions: Vec::new(),
         snapshot: CursorAccountSnapshot::default(),
     };
     file.accounts.push(stored.clone());
@@ -102,6 +134,92 @@ pub fn set_report_since(data_dir: &Path, hash: &str, since: Option<String>) -> R
     };
     acct.report_since = since;
     save(data_dir, &file)?;
+    Ok(true)
+}
+
+/// 账号级设置的部分更新：缺省字段不动。
+#[derive(Debug, Default, Deserialize)]
+pub struct SettingsPatch {
+    #[serde(default)]
+    pub auto_refresh: Option<bool>,
+    #[serde(default)]
+    pub refresh_interval: Option<String>,
+    #[serde(default)]
+    pub session_guard: Option<bool>,
+    #[serde(default)]
+    pub guard_interval: Option<String>,
+    /// 锁定集合整体替换（去重）。
+    #[serde(default)]
+    pub locked_sessions: Option<Vec<String>>,
+}
+
+/// 应用账号级设置。周期字段先校验格式与范围（15s–24h），再查账号；
+/// 返回是否找到账号。
+pub fn set_settings(data_dir: &Path, hash: &str, patch: &SettingsPatch) -> Result<bool> {
+    if let Some(v) = &patch.refresh_interval {
+        crate::config::validate_interval(v).context("refresh_interval")?;
+    }
+    if let Some(v) = &patch.guard_interval {
+        crate::config::validate_interval(v).context("guard_interval")?;
+    }
+    let mut file = load(data_dir)?;
+    let Some(acct) = file.accounts.iter_mut().find(|a| a.account_hash == hash) else {
+        return Ok(false);
+    };
+    if let Some(v) = patch.auto_refresh {
+        acct.auto_refresh = v;
+    }
+    if let Some(v) = &patch.refresh_interval {
+        acct.refresh_interval = v.clone();
+    }
+    if let Some(v) = patch.session_guard {
+        acct.session_guard = v;
+    }
+    if let Some(v) = &patch.guard_interval {
+        acct.guard_interval = v.clone();
+    }
+    if let Some(v) = &patch.locked_sessions {
+        let mut seen = std::collections::HashSet::new();
+        acct.locked_sessions = v
+            .iter()
+            .filter(|id| seen.insert(id.as_str()))
+            .cloned()
+            .collect();
+    }
+    save(data_dir, &file)?;
+    Ok(true)
+}
+
+/// 监控自动锁定：把 ids 并入锁定集合（去重）。返回是否找到账号。
+pub fn lock_sessions(data_dir: &Path, hash: &str, ids: &[String]) -> Result<bool> {
+    let mut file = load(data_dir)?;
+    let Some(acct) = file.accounts.iter_mut().find(|a| a.account_hash == hash) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for id in ids {
+        if !acct.locked_sessions.contains(id) {
+            acct.locked_sessions.push(id.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        save(data_dir, &file)?;
+    }
+    Ok(true)
+}
+
+/// 撤销成功后移除锁定标记，避免僵尸 id 留在锁定集合。
+pub fn unlock_session(data_dir: &Path, hash: &str, id: &str) -> Result<bool> {
+    let mut file = load(data_dir)?;
+    let Some(acct) = file.accounts.iter_mut().find(|a| a.account_hash == hash) else {
+        return Ok(false);
+    };
+    let before = acct.locked_sessions.len();
+    acct.locked_sessions.retain(|s| s != id);
+    if acct.locked_sessions.len() != before {
+        save(data_dir, &file)?;
+    }
     Ok(true)
 }
 
@@ -169,6 +287,12 @@ pub fn public_views(file: &CursorAccountsFile) -> Vec<AccountView> {
                 ide_token_differs: false,
                 added_at: a.added_at.clone(),
                 report_since: a.report_since.clone(),
+                auto_refresh: a.auto_refresh,
+                refresh_interval: a.refresh_interval.clone(),
+                session_guard: a.session_guard,
+                guard_interval: a.guard_interval.clone(),
+                locked_sessions: a.locked_sessions.clone(),
+                guard: None,
                 snapshot: CursorAccountSnapshot::default(),
                 usage_raw: None,
                 usage_error: None,
@@ -195,6 +319,17 @@ pub struct AccountView {
     pub added_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report_since: Option<String>,
+    /// 面板打开时是否自动刷新套餐用量（账号级设置）。
+    pub auto_refresh: bool,
+    pub refresh_interval: String,
+    /// 会话监控开关（账号级设置）。
+    pub session_guard: bool,
+    pub guard_interval: String,
+    /// 锁定（可信）的会话 id。
+    pub locked_sessions: Vec<String>,
+    /// 会话监控状态摘要（上次/下次检测、错误、事件），仅已加入账号下发。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<crate::session_guard::GuardView>,
     #[serde(flatten)]
     pub snapshot: CursorAccountSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,6 +354,12 @@ impl AccountView {
             ide_token_differs: false,
             added_at: None,
             report_since: None,
+            auto_refresh: true,
+            refresh_interval: default_refresh_interval(),
+            session_guard: false,
+            guard_interval: default_guard_interval(),
+            locked_sessions: Vec::new(),
+            guard: None,
             snapshot: preview.snapshot.clone(),
             usage_raw: None,
             usage_error: None,
@@ -276,6 +417,75 @@ mod tests {
         assert_eq!(t.to_rfc3339(), "2026-08-29T04:30:00+00:00");
         assert!(parse_since("").is_none());
         assert!(parse_since("not-a-date").is_none());
+    }
+
+    #[test]
+    fn old_toml_gets_settings_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            path(dir.path()),
+            "[[accounts]]\naccount_hash = \"abc\"\naccount_label = \"t@e.com\"\naccess_token = \"tok\"\n",
+        )
+        .unwrap();
+        let file = load(dir.path()).unwrap();
+        let a = &file.accounts[0];
+        assert!(a.auto_refresh);
+        assert_eq!(a.refresh_interval, "300s");
+        assert!(!a.session_guard);
+        assert_eq!(a.guard_interval, "60s");
+        assert!(a.locked_sessions.is_empty());
+    }
+
+    #[test]
+    fn set_settings_partial_update_and_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let stored = add_from_raw(dir.path(), &sample_jwt()).unwrap();
+        let hash = stored[0].account_hash.clone();
+        // 部分更新：只动 auto_refresh，其余保持默认
+        let patch = SettingsPatch {
+            auto_refresh: Some(false),
+            ..SettingsPatch::default()
+        };
+        assert!(set_settings(dir.path(), &hash, &patch).unwrap());
+        let a = load(dir.path()).unwrap().accounts[0].clone();
+        assert!(!a.auto_refresh);
+        assert_eq!(a.refresh_interval, "300s");
+        // 周期越界拒绝，且不写入
+        let bad = SettingsPatch {
+            guard_interval: Some("5s".into()),
+            ..SettingsPatch::default()
+        };
+        assert!(set_settings(dir.path(), &hash, &bad).is_err());
+        assert_eq!(load(dir.path()).unwrap().accounts[0].guard_interval, "60s");
+        // 锁定集合替换并去重
+        let locks = SettingsPatch {
+            session_guard: Some(true),
+            guard_interval: Some("2m".into()),
+            locked_sessions: Some(vec!["aa".into(), "bb".into(), "aa".into()]),
+            ..SettingsPatch::default()
+        };
+        assert!(set_settings(dir.path(), &hash, &locks).unwrap());
+        let a = load(dir.path()).unwrap().accounts[0].clone();
+        assert!(a.session_guard);
+        assert_eq!(a.guard_interval, "2m");
+        assert_eq!(a.locked_sessions, vec!["aa", "bb"]);
+        // 未知账号
+        assert!(!set_settings(dir.path(), "nope", &SettingsPatch::default()).unwrap());
+    }
+
+    #[test]
+    fn lock_and_unlock_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let stored = add_from_raw(dir.path(), &sample_jwt()).unwrap();
+        let hash = stored[0].account_hash.clone();
+        assert!(lock_sessions(dir.path(), &hash, &["aa".into(), "bb".into()]).unwrap());
+        assert!(lock_sessions(dir.path(), &hash, &["bb".into()]).unwrap(), "重复锁定幂等");
+        let a = load(dir.path()).unwrap().accounts[0].clone();
+        assert_eq!(a.locked_sessions, vec!["aa", "bb"]);
+        assert!(unlock_session(dir.path(), &hash, "aa").unwrap());
+        assert_eq!(load(dir.path()).unwrap().accounts[0].locked_sessions, vec!["bb"]);
+        assert!(!lock_sessions(dir.path(), "nope", &["x".into()]).unwrap());
+        assert!(!unlock_session(dir.path(), "nope", "x").unwrap());
     }
 
     #[test]

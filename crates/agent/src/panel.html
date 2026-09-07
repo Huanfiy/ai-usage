@@ -21,6 +21,8 @@
       font-family: "IBM Plex Sans", "Noto Sans CJK SC", "Source Han Sans SC", ui-sans-serif, system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
+    /* hidden 属性必须压过 .acct-grid / .plus 等 display 规则 */
+    [hidden] { display: none !important; }
     html { color-scheme: dark; }
     html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
     button, input, textarea, select { font: inherit; color: inherit; }
@@ -488,6 +490,29 @@
     }
     .sess-time { font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
     .sess-empty { color: var(--muted); font-size: 13px; padding: 16px 0; text-align: center; }
+    .head-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .set-sec {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--bg-elev-2);
+    }
+    .set-sec + .set-sec { margin-top: 10px; }
+    .set-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .set-row .itv-wrap {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .set-row input.itv { width: 84px; }
+    .set-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .set-sec .field-hint { margin-top: 8px; line-height: 1.5; }
+    .set-sec .sess-list { margin-top: 10px; }
+    .set-sec .sess-row { background: var(--bg-elev); }
+    #guard-status { font-size: 12px; margin-top: 8px; }
+    .guard-err { color: var(--rose); }
     .credit-row {
       display: flex;
       flex-direction: column;
@@ -747,7 +772,10 @@
 
     <section class="card">
       <div class="card-head">
-        <h2>Cursor 账号</h2>
+        <div class="head-left">
+          <button type="button" class="icon-btn" id="settings-back" title="返回账号列表" aria-label="返回账号列表" hidden></button>
+          <h2 id="cursor-title">Cursor 账号</h2>
+        </div>
         <button type="button" class="plus" id="add-open" title="添加账号" aria-label="添加账号">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M12 5v14"/><path d="M5 12h14"/>
@@ -755,6 +783,38 @@
         </button>
       </div>
       <div class="acct-grid" id="accounts"></div>
+      <div id="acct-settings" hidden>
+        <div class="set-sec">
+          <div class="set-row">
+            <span class="set-title">自动刷新</span>
+            <span class="grow"></span>
+            <label class="check"><input id="set-auto" type="checkbox" /> 启用</label>
+            <span class="itv-wrap"><label for="set-auto-itv">周期</label>
+              <input id="set-auto-itv" class="itv" type="text" placeholder="300s" autocomplete="off" /></span>
+          </div>
+          <div class="field-hint">面板打开时按周期拉取套餐用量（usage-summary）。格式 30s / 5m / 2h，回车或移开焦点即保存。</div>
+          <div class="msg" id="set-auto-msg" aria-live="polite"></div>
+        </div>
+        <div class="set-sec">
+          <div class="set-row">
+            <span class="set-title">登录会话</span>
+            <span class="grow"></span>
+            <label class="check"><input id="set-guard" type="checkbox" /> 自动监控</label>
+            <span class="itv-wrap"><label for="set-guard-itv">周期</label>
+              <input id="set-guard-itv" class="itv" type="text" placeholder="60s" autocomplete="off" /></span>
+            <button type="button" class="btn ghost mini" id="sess-check">立即检测</button>
+            <button type="button" class="icon-btn" id="sess-reload" title="重新拉取" aria-label="重新拉取"></button>
+          </div>
+          <div class="field-hint">与 cursor.com 设置页「Active Sessions」一致。锁定 = 可信设备；开启监控后 daemon 按周期核对并自动下线未锁定会话（本采集端会话始终锁定）。周期越短入侵响应越快，请求也越密。撤销由服务端异步生效，可能延迟几分钟。</div>
+          <div class="meta" id="guard-status"></div>
+          <div class="sess-list" id="sess-list"></div>
+          <details class="report" id="guard-log" hidden>
+            <summary>监控记录</summary>
+            <div id="guard-log-body"></div>
+          </details>
+          <div class="msg" id="sess-msg" aria-live="polite"></div>
+        </div>
+      </div>
       <div class="msg" id="acct-msg" aria-live="polite"></div>
     </section>
 
@@ -872,23 +932,6 @@
     </div>
   </dialog>
 
-  <dialog id="sess-dlg" class="wide" aria-labelledby="sess-title">
-    <div class="dlg-card">
-      <div class="json-head">
-        <div>
-          <h3 id="sess-title">登录会话</h3>
-          <p class="dlg-lead" id="sess-sub">与 cursor.com 设置页「Active Sessions」一致。撤销由服务端异步生效，可能延迟几分钟。</p>
-        </div>
-        <div class="acct-tools">
-          <button type="button" class="icon-btn" id="sess-reload" title="重新拉取" aria-label="重新拉取"></button>
-          <button type="button" class="icon-btn" id="sess-close" title="关闭" aria-label="关闭"></button>
-        </div>
-      </div>
-      <div class="sess-list" id="sess-list"></div>
-      <div class="msg" id="sess-msg" aria-live="polite"></div>
-    </div>
-  </dialog>
-
   <script>
     const $ = (id) => document.getElementById(id);
     let fileText = "";
@@ -904,9 +947,11 @@
     const planPaused = new Set();
     const planSpinning = new Set();
     const planInflight = new Map();
+    const planLastAt = new Map();
     const cardCache = new Map();
     const msgTimers = new Map();
-    const PLAN_MS = 60000;
+    // 自动刷新节拍器：每 5s 核对一次各账号是否到达自己的刷新周期
+    const PLAN_TICK_MS = 5000;
     const STATUS_MS = 8000;
     let statusTimer = null;
     let planTimer = null;
@@ -929,12 +974,19 @@
         "M7 6h1v4",
         "M16.71 13.88l.7.71-2.82 2.82",
       ],
-      devices: [
-        "M4 5h12a2 2 0 0 1 2 2v3",
-        "M2 17h12",
-        "M4 5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7",
-        "M18 12h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z",
+      gear: [
+        "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z",
+        "M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
       ],
+      lock: [
+        "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
+        "M7 11V7a5 5 0 0 1 10 0v4",
+      ],
+      unlock: [
+        "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
+        "M7 11V7a5 5 0 0 1 9.9-1",
+      ],
+      back: ["M19 12H5", "M12 19l-7-7 7-7"],
     };
     const SESSION_KIND = {
       SESSION_TYPE_WEB: "Web",
@@ -1178,6 +1230,13 @@
     function intervalValid(v) {
       return /^\d+(s|m|h)?$/.test(v);
     }
+    // "300s" / "5m" / "2h" / "300" → 毫秒；无法解析返回 null
+    function parseIntervalMs(v) {
+      const m = /^(\d+)(s|m|h)?$/.exec(String(v || "").trim());
+      if (!m) return null;
+      const unit = m[2] === "h" ? 3600000 : m[2] === "m" ? 60000 : 1000;
+      return Number(m[1]) * unit;
+    }
     async function saveInterval(key, input) {
       const s = lastStatus;
       if (!s) return;
@@ -1293,9 +1352,9 @@
         tools.appendChild(creditBtn);
       }
       if (a.stored || a.from_ide) {
-        const sessBtn = iconBtn("devices", "登录会话");
-        sessBtn.onclick = () => openSessions(a);
-        tools.appendChild(sessBtn);
+        const setBtn = iconBtn("gear", "设置");
+        setBtn.onclick = () => openSettings(a);
+        tools.appendChild(setBtn);
       }
       head.appendChild(tools);
       top.appendChild(head);
@@ -1409,7 +1468,7 @@
           try {
             await api("/v1/cursor/accounts/" + encodeURIComponent(a.account_hash), { method: "DELETE" });
             if (jsonHash === a.account_hash) closeJson();
-            if (sessHash === a.account_hash) closeSessions();
+            if (settingsHash === a.account_hash) closeSettings();
             setMsg("acct-msg", "已删除", "ok");
             refresh();
           } catch (e) { setMsg("acct-msg", e.message, "err"); }
@@ -1595,6 +1654,11 @@
       const tools = $("tools");
       tools.innerHTML = "";
       (s.tools || []).forEach((t) => tools.appendChild(toolMark(t)));
+      if (settingsHash) {
+        const acct = (s.cursor_accounts || []).find((x) => x.account_hash === settingsHash);
+        if (!acct) closeSettings();
+        else paintSettings(acct);
+      }
       const foot = $("foot");
       foot.replaceChildren();
       foot.appendChild(document.createTextNode("ai-usage-agent v" + (s.version || "?") + " · 配置 "));
@@ -1618,6 +1682,7 @@
           usageForcePulse.delete(hash);
           planPaused.delete(hash);
           planSpinning.delete(hash);
+          planLastAt.delete(hash);
           cardCache.delete(hash);
         }
       }
@@ -1683,6 +1748,7 @@
         return;
       }
       const run = (async () => {
+        planLastAt.set(hash, Date.now());
         planSpinning.add(hash);
         applyPlanSpin(hash);
         try {
@@ -1716,12 +1782,20 @@
       stopVisibleLoops();
       if (!pageVisible()) return;
       statusTimer = setInterval(() => refresh().catch(showPageErr), STATUS_MS);
-      planTimer = setInterval(() => { void tickPlan(); }, PLAN_MS);
+      planTimer = setInterval(() => { void tickPlan(false); }, PLAN_TICK_MS);
     }
-    async function tickPlan() {
+    function planIntervalMs(a) {
+      return parseIntervalMs(a.refresh_interval) || 300000;
+    }
+    // 按账号周期刷新：force = 首屏或回到可见时对启用账号立刻刷一轮
+    async function tickPlan(force) {
       if (!pageVisible() || planBusy) return;
       const list = (lastStatus && lastStatus.cursor_accounts) || [];
-      const targets = list.filter((a) => a.account_hash && !planPaused.has(a.account_hash) && !a.usage_error);
+      const now = Date.now();
+      const targets = list.filter((a) => a.account_hash
+        && !planPaused.has(a.account_hash) && !a.usage_error
+        && a.auto_refresh !== false
+        && (force || now - (planLastAt.get(a.account_hash) || 0) >= planIntervalMs(a)));
       if (!targets.length) return;
       planBusy = true;
       try {
@@ -1733,7 +1807,7 @@
     }
     function onVisibility() {
       if (pageVisible()) {
-        refresh().then(() => tickPlan()).catch(showPageErr);
+        refresh().then(() => tickPlan(true)).catch(showPageErr);
         startVisibleLoops();
       } else {
         stopVisibleLoops();
@@ -1814,8 +1888,11 @@
       if (e.target === $("credit-dlg")) $("credit-dlg").close();
     });
 
-    let sessHash = null;
-    let sessLabel = "";
+    // —— 账号设置页：自动刷新 + 登录会话（锁定 / 监控） ——
+    let settingsHash = null;
+    let setBusy = false;       // PUT 在途时不用 status 回填复选框
+    let sessCache = [];        // 最近一次拉到的会话列表
+    let sessPaintFp = "";      // 会话列表重绘指纹，避免 8s 轮询整体重绘
     function fmtSessTime(iso) {
       if (!iso) return "";
       const d = new Date(iso);
@@ -1823,21 +1900,122 @@
       const pad = (n) => String(n).padStart(2, "0");
       return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
     }
-    function renderSessions(list) {
+    function curAcct() {
+      if (!settingsHash || !lastStatus) return null;
+      return (lastStatus.cursor_accounts || []).find((a) => a.account_hash === settingsHash) || null;
+    }
+    async function putSettings(patch) {
+      await api("/v1/cursor/accounts/" + encodeURIComponent(settingsHash) + "/settings", {
+        method: "PUT",
+        body: JSON.stringify(patch),
+      });
+    }
+    const GUARD_KIND = {
+      revoked: "已下线",
+      revoke_failed: "撤销失败",
+      auto_locked: "自动锁定",
+      unknown_type: "未知类型",
+    };
+    function renderGuardLog(a) {
+      const box = $("guard-log");
+      const body = $("guard-log-body");
+      const events = (a && a.guard && a.guard.events) || [];
+      if (!events.length) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      body.replaceChildren();
+      events.slice(-20).reverse().forEach((ev) => {
+        const line = el("div", "report-line");
+        line.appendChild(el("span", "report-src", fmtWhen(ev.at)));
+        const cls = ev.kind === "revoked" ? " on"
+          : ev.kind === "revoke_failed" ? " bad"
+          : ev.kind === "unknown_type" ? " warn" : "";
+        line.appendChild(el("span", "chip" + cls, GUARD_KIND[ev.kind] || ev.kind));
+        const bits = [SESSION_KIND[ev.session_type] || ev.session_type || ""];
+        if (ev.session_id) bits.push(String(ev.session_id).slice(0, 10) + "…");
+        if (ev.detail) bits.push(ev.detail);
+        line.appendChild(el("span", "meta", bits.filter(Boolean).join(" · ")));
+        body.appendChild(line);
+      });
+    }
+    function paintSettings(a) {
+      $("cursor-title").textContent = "设置 · " + (a.account_label || a.account_hash);
+      const stored = !!a.stored;
+      $("set-auto").disabled = !stored;
+      $("set-auto-itv").disabled = !stored;
+      $("set-guard").disabled = !stored;
+      $("set-guard-itv").disabled = !stored || !a.session_guard;
+      $("sess-check").disabled = !stored;
+      if (!setBusy) {
+        $("set-auto").checked = a.auto_refresh !== false;
+        $("set-guard").checked = !!a.session_guard;
+      }
+      setIfIdle("set-auto-itv", a.refresh_interval || "300s");
+      setIfIdle("set-guard-itv", a.guard_interval || "60s");
+      const box = $("guard-status");
+      box.replaceChildren();
+      if (!stored) {
+        box.appendChild(el("span", "", "未加入采集：仅可查看与手动撤销会话，加入后可配置自动刷新与监控。"));
+      } else if (!a.session_guard) {
+        box.appendChild(el("span", "", "监控已关闭 · 仅手动排查"));
+      } else {
+        const g = a.guard || {};
+        const bits = [g.last_check_at ? "上次检测 " + fmtWhen(g.last_check_at) : "尚未检测"];
+        if (g.next_check_at) bits.push("下次 " + fmtTick(g.next_check_at));
+        box.appendChild(el("span", "", bits.join(" · ")));
+        if (g.last_error) box.appendChild(el("span", "guard-err", " · " + g.last_error));
+      }
+      renderGuardLog(a);
+      paintSessionRows();
+    }
+    function sessionRowsFp() {
+      const a = curAcct();
+      return JSON.stringify([
+        (a && a.locked_sessions) || [],
+        !!(a && a.session_guard),
+        !!(a && a.stored),
+        sessCache.map((s) => s.session_id),
+      ]);
+    }
+    function paintSessionRows() {
+      const fp = sessionRowsFp();
+      if (fp === sessPaintFp) return;
+      sessPaintFp = fp;
+      drawSessions();
+    }
+    function drawSessions() {
       const box = $("sess-list");
       box.textContent = "";
-      if (!list.length) {
+      if (!sessCache.length) {
         box.appendChild(el("div", "sess-empty", "没有活动会话"));
         return;
       }
-      const sorted = list.slice().sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
+      const a = curAcct();
+      const locked = new Set((a && a.locked_sessions) || []);
+      const guardOn = !!(a && a.session_guard);
+      const stored = !!(a && a.stored);
+      const label = (a && a.account_label) || settingsHash || "";
+      const sorted = sessCache.slice().sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)));
       sorted.forEach((s) => {
+        const isLocked = s.current || locked.has(s.session_id);
         const row = el("div", "sess-row" + (s.current ? " cur" : ""));
         const main = el("div", "sess-main");
         const kind = el("div", "sess-kind", SESSION_KIND[s.session_type] || s.session_type || "未知");
         if (s.current) {
           const c = el("span", "chip on", "本采集端使用中");
-          c.title = "采集端存的凭证就是这条会话；撤销后本账号采集会立刻失效";
+          c.title = "采集端存的凭证就是这条会话；始终视为锁定，不会被监控下线";
+          kind.appendChild(c);
+        } else if (isLocked) {
+          kind.appendChild(el("span", "chip on", "已锁定"));
+        } else if (guardOn) {
+          const c = el("span", "chip bad", "未锁定 · 下次检测下线");
+          c.title = "监控开启中：这条会话不在可信清单里，将在下次检测时被撤销";
+          kind.appendChild(c);
+        } else {
+          const c = el("span", "chip warn", "未锁定");
+          c.title = "不在可信清单里；开启监控后会被自动下线";
           kind.appendChild(c);
         }
         main.appendChild(kind);
@@ -1849,6 +2027,18 @@
         time.appendChild(el("div", "", "创建 " + fmtSessTime(s.created_at)));
         if (s.expires_at) time.appendChild(el("div", "", "到期 " + fmtSessTime(s.expires_at)));
         row.appendChild(time);
+        const tools = el("div", "acct-tools");
+        const lockBtn = iconBtn(isLocked ? "lock" : "unlock", isLocked ? "解除锁定" : "锁定为可信设备");
+        if (s.current) {
+          lockBtn.disabled = true;
+          lockBtn.title = "本采集端会话始终锁定";
+        } else if (!stored) {
+          lockBtn.disabled = true;
+          lockBtn.title = "加入采集后可锁定";
+        } else {
+          lockBtn.onclick = () => toggleLock(s.session_id);
+        }
+        tools.appendChild(lockBtn);
         const btn = el("button", "btn danger mini", "撤销");
         btn.type = "button";
         if (s.type_code == null) {
@@ -1858,14 +2048,14 @@
         btn.onclick = async () => {
           const who = SESSION_KIND[s.session_type] || s.session_type;
           const warn = s.current
-            ? "这是本采集端正在使用的会话。撤销后 " + sessLabel + " 的采集会立刻 401，需重新导入凭证。仍要撤销？"
+            ? "这是本采集端正在使用的会话。撤销后 " + label + " 的采集会立刻 401，需重新导入凭证。仍要撤销？"
             : "撤销 " + who + " 会话（创建于 " + fmtSessTime(s.created_at) + "）？对应设备会被登出。";
           const yes = await confirmDlg(warn, "撤销");
           if (!yes) return;
           btn.disabled = true;
           setMsg("sess-msg", "正在撤销…");
           try {
-            await api("/v1/cursor/accounts/" + encodeURIComponent(sessHash) + "/sessions/revoke", {
+            await api("/v1/cursor/accounts/" + encodeURIComponent(settingsHash) + "/sessions/revoke", {
               method: "POST",
               body: JSON.stringify({ session_id: s.session_id, type: s.session_type }),
             });
@@ -1876,21 +2066,39 @@
             setMsg("sess-msg", e.message, "err");
           }
         };
-        row.appendChild(btn);
+        tools.appendChild(btn);
+        row.appendChild(tools);
         box.appendChild(row);
       });
     }
+    async function toggleLock(id) {
+      const a = curAcct();
+      if (!a || !a.stored) return;
+      const locked = new Set(a.locked_sessions || []);
+      if (locked.has(id)) locked.delete(id);
+      else locked.add(id);
+      try {
+        await putSettings({ locked_sessions: [...locked] });
+        await refresh();
+      } catch (e) {
+        setMsg("sess-msg", e.message, "err");
+      }
+    }
     async function loadSessions() {
-      if (!sessHash) return;
-      const hash = sessHash;
+      if (!settingsHash) return;
+      const hash = settingsHash;
       $("sess-reload").classList.add("spin");
       $("sess-reload").disabled = true;
       try {
         const r = await api("/v1/cursor/accounts/" + encodeURIComponent(hash) + "/sessions");
-        if (sessHash !== hash) return;
-        renderSessions(r.sessions || []);
+        if (settingsHash !== hash) return;
+        sessCache = r.sessions || [];
+        sessPaintFp = "";
+        paintSessionRows();
       } catch (e) {
-        if (sessHash !== hash) return;
+        if (settingsHash !== hash) return;
+        sessCache = [];
+        sessPaintFp = "";
         $("sess-list").textContent = "";
         setMsg("sess-msg", e.message, "err");
       } finally {
@@ -1898,28 +2106,160 @@
         $("sess-reload").disabled = false;
       }
     }
-    function openSessions(a) {
-      sessHash = a.account_hash;
-      sessLabel = a.account_label || a.account_hash;
-      $("sess-title").textContent = "登录会话 · " + sessLabel;
+    function openSettings(a) {
+      settingsHash = a.account_hash;
+      sessCache = [];
       $("sess-list").textContent = "";
       $("sess-list").appendChild(el("div", "sess-empty", "正在拉取…"));
+      sessPaintFp = sessionRowsFp(); // 占位保持到首次拉取完成
       setMsg("sess-msg", "");
-      $("sess-dlg").showModal();
+      setMsg("set-auto-msg", "");
+      $("accounts").hidden = true;
+      $("acct-settings").hidden = false;
+      $("add-open").hidden = true;
+      $("settings-back").hidden = false;
+      paintSettings(a);
       loadSessions();
     }
-    function closeSessions() {
-      sessHash = null;
-      if ($("sess-dlg").open) $("sess-dlg").close();
+    function closeSettings() {
+      if (!settingsHash) return;
+      settingsHash = null;
+      sessCache = [];
+      sessPaintFp = "";
+      $("accounts").hidden = false;
+      $("acct-settings").hidden = true;
+      $("add-open").hidden = false;
+      $("settings-back").hidden = true;
+      $("cursor-title").textContent = "Cursor 账号";
     }
-    $("sess-close").appendChild(svgIcon(ICONS.x));
-    $("sess-close").onclick = closeSessions;
+    $("settings-back").appendChild(svgIcon(ICONS.back));
+    $("settings-back").onclick = closeSettings;
     $("sess-reload").appendChild(svgIcon(ICONS.refresh));
     $("sess-reload").onclick = () => loadSessions();
-    $("sess-dlg").addEventListener("click", (e) => {
-      if (e.target === $("sess-dlg")) closeSessions();
-    });
-    $("sess-dlg").addEventListener("close", () => { sessHash = null; });
+    $("set-auto").onchange = async () => {
+      const a = curAcct();
+      if (!a || !a.stored) return;
+      const want = $("set-auto").checked;
+      setBusy = true;
+      try {
+        await putSettings({ auto_refresh: want });
+        setMsg("set-auto-msg", want ? "已启用自动刷新" : "已停用自动刷新", "ok");
+        await refresh();
+      } catch (e) {
+        setMsg("set-auto-msg", e.message, "err");
+        $("set-auto").checked = !want;
+      } finally {
+        setBusy = false;
+      }
+    };
+    $("set-guard").onchange = async () => {
+      const a = curAcct();
+      if (!a || !a.stored) return;
+      const want = $("set-guard").checked;
+      setBusy = true;
+      try {
+        if (!want) {
+          await putSettings({ session_guard: false });
+          setMsg("sess-msg", "已关闭监控", "ok");
+        } else {
+          // 先拉最新列表：锁定集合为空则把当前会话全部锁定为可信；
+          // 非空则提示未锁定的会话将被下线
+          const r = await api("/v1/cursor/accounts/" + encodeURIComponent(settingsHash) + "/sessions");
+          const list = r.sessions || [];
+          sessCache = list;
+          sessPaintFp = "";
+          const locked = new Set(a.locked_sessions || []);
+          if (!locked.size) {
+            const ids = list.map((s) => s.session_id).filter((id) => /^[0-9a-fA-F]+$/.test(id));
+            await putSettings({ session_guard: true, locked_sessions: ids });
+            setMsg("sess-msg", "已开启监控，当前 " + ids.length + " 条会话已全部锁定为可信", "ok");
+          } else {
+            const exposed = list.filter((s) => !s.current && !locked.has(s.session_id));
+            if (exposed.length) {
+              const yes = await confirmDlg(exposed.length + " 条未锁定会话将在下次检测时下线。开启监控？", "开启");
+              if (!yes) {
+                $("set-guard").checked = false;
+                paintSessionRows();
+                return;
+              }
+            }
+            await putSettings({ session_guard: true });
+            setMsg("sess-msg", "已开启监控", "ok");
+          }
+        }
+        await refresh();
+      } catch (e) {
+        setMsg("sess-msg", e.message, "err");
+        $("set-guard").checked = !want;
+      } finally {
+        setBusy = false;
+      }
+    };
+    $("sess-check").onclick = async () => {
+      const a = curAcct();
+      if (!a || !a.stored) return;
+      if (!a.session_guard) {
+        const locked = new Set(a.locked_sessions || []);
+        const n = sessCache.filter((s) => !s.current && !locked.has(s.session_id)).length;
+        const yes = await confirmDlg(
+          "监控未开启。立即检测会撤销所有未锁定会话" + (n ? "（当前 " + n + " 条）" : "") + "。继续？",
+          "检测"
+        );
+        if (!yes) return;
+      }
+      const btn = $("sess-check");
+      btn.disabled = true;
+      setMsg("sess-msg", "正在检测…");
+      try {
+        const r = await api("/v1/cursor/accounts/" + encodeURIComponent(settingsHash) + "/sessions/check", { method: "POST" });
+        sessCache = r.sessions || [];
+        sessPaintFp = "";
+        const n = (r.revoked || []).length;
+        setMsg("sess-msg", n ? "已提交下线 " + n + " 条会话，服务端可能需要几分钟生效" : "检测完成，会话全部可信", "ok");
+        await refresh();
+        paintSessionRows();
+      } catch (e) {
+        setMsg("sess-msg", e.message, "err");
+      } finally {
+        btn.disabled = false;
+      }
+    };
+    function bindSettingInterval(id, key, msgId, defVal) {
+      const input = $(id);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+        if (e.key === "Escape") {
+          const a = curAcct();
+          input.value = (a && a[key]) || defVal;
+          input.blur();
+        }
+      });
+      input.addEventListener("blur", async () => {
+        const a = curAcct();
+        if (!a || !a.stored) return;
+        const v = input.value.trim();
+        const prev = a[key] || defVal;
+        if (!v || v === prev) {
+          input.value = prev;
+          return;
+        }
+        if (!intervalValid(v)) {
+          setMsg(msgId, "周期格式应为 30s / 5m / 2h", "err");
+          input.value = prev;
+          return;
+        }
+        try {
+          await putSettings({ [key]: v });
+          setMsg(msgId, "周期已保存", "ok");
+          await refresh();
+        } catch (e) {
+          setMsg(msgId, e.message, "err");
+          input.value = prev;
+        }
+      });
+    }
+    bindSettingInterval("set-auto-itv", "refresh_interval", "set-auto-msg", "300s");
+    bindSettingInterval("set-guard-itv", "guard_interval", "sess-msg", "60s");
 
     let sinceHash = null;
     function openSinceDlg(a) {
@@ -2142,12 +2482,12 @@
     };
     $("page-retry").onclick = () => {
       refresh().then(() => {
-        if (pageVisible()) { void tickPlan(); }
+        if (pageVisible()) { void tickPlan(true); }
       }).catch(showPageErr);
     };
     refresh().then(() => {
       if (pageVisible()) {
-        void tickPlan();
+        void tickPlan(true);
       }
     }).catch(showPageErr);
     // 首屏失败也保持轮询，网络恢复后自动回来，不再假死

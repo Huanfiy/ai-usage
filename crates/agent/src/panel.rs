@@ -35,6 +35,11 @@ pub struct PanelState {
     wake: Condvar,
     usage_cache: Mutex<HashMap<String, CachedPlan>>,
     usage_errors: Mutex<HashMap<String, String>>,
+    /// 会话监控线程的睡眠闸：设置变更时 poke 立即唤醒。
+    guard_gate: Mutex<()>,
+    guard_wake: Condvar,
+    /// 串行化会话检查：守护线程与「立即检测」不并发打同一账号。
+    guard_busy: Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -137,7 +142,26 @@ impl PanelState {
             wake: Condvar::new(),
             usage_cache: Mutex::new(HashMap::new()),
             usage_errors: Mutex::new(HashMap::new()),
+            guard_gate: Mutex::new(()),
+            guard_wake: Condvar::new(),
+            guard_busy: Mutex::new(()),
         })
+    }
+
+    /// 唤醒会话监控线程（设置变更后让新周期/新开关立即生效）。
+    pub fn poke_guard(&self) {
+        self.guard_wake.notify_all();
+    }
+
+    /// 会话监控线程的定时睡眠，可被 [`Self::poke_guard`] 打断。
+    pub fn guard_wait(&self, timeout: Duration) {
+        let g = self.guard_gate.lock().expect("guard gate");
+        let _ = self.guard_wake.wait_timeout(g, timeout);
+    }
+
+    /// 拿到检查锁：持锁期间其它检查排队。
+    pub fn guard_check_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.guard_busy.lock().expect("guard busy")
     }
 
     pub fn config(&self) -> AgentConfig {
@@ -454,6 +478,21 @@ fn dispatch(
                 Ok(true) => json_ok(serde_json::json!({"ok": true})),
                 Ok(false) => json_err(404, "账号不存在"),
                 Err(err) => json_err(400, &err.to_string()),
+            }
+        }
+        (m, p) if m == "PUT" && account_subpath(p, "/settings").is_some() => {
+            let hash = account_subpath(p, "/settings").expect("matched");
+            match put_account_settings(state, &hash, body) {
+                Ok(true) => json_ok(serde_json::json!({"ok": true})),
+                Ok(false) => json_err(404, "账号不存在"),
+                Err(err) => json_err(400, &err.to_string()),
+            }
+        }
+        (m, p) if m == "POST" && account_subpath(p, "/sessions/check").is_some() => {
+            let hash = account_subpath(p, "/sessions/check").expect("matched");
+            match post_sessions_check(state, &hash) {
+                Ok(v) => json_ok(v),
+                Err(err) => session_err(err),
             }
         }
         (m, p) if m == "GET" && account_subpath(p, "/sessions").is_some() => {
@@ -972,11 +1011,13 @@ fn account_subpath(path: &str, suffix: &str) -> Option<String> {
     Some(percent_decode(hash))
 }
 
-/// 会话接口的错误：账号不存在 404、凭证问题 401、其余上游问题 502。
+/// 会话接口的错误：账号不存在 404、凭证问题 401、本机写入失败 500、
+/// 其余上游问题 502。
 #[derive(Debug)]
 enum SessionError {
     NoAccount,
     BadRequest(String),
+    Internal(String),
     Upstream(PlanFetchError),
 }
 
@@ -984,6 +1025,7 @@ fn session_err(err: SessionError) -> (u16, &'static str, Vec<u8>) {
     match err {
         SessionError::NoAccount => json_err(404, "账号不存在"),
         SessionError::BadRequest(msg) => json_err(400, &msg),
+        SessionError::Internal(msg) => json_err(500, &msg),
         SessionError::Upstream(PlanFetchError::Token | PlanFetchError::Auth) => {
             json_err(401, plan_err_msg(PlanFetchError::Auth))
         }
@@ -1017,7 +1059,8 @@ struct RevokeBody {
 }
 
 /// 撤销一条会话。撤销采集端自己那条会让后续采集 401，前端二次确认，
-/// 这里不拦——用户可能就是要下线这台机器。
+/// 这里不拦——用户可能就是要下线这台机器。成功后同步移除锁定标记，
+/// 避免僵尸 id 留在锁定集合。
 fn post_revoke_session(state: &PanelState, hash: &str, body: &[u8]) -> Result<(), SessionError> {
     let token = account_token_or_404(state, hash)?;
     let req: RevokeBody = serde_json::from_slice(body)
@@ -1032,10 +1075,58 @@ fn post_revoke_session(state: &PanelState, hash: &str, body: &[u8]) -> Result<()
             req.session_type
         )));
     }
-    if cfg!(test) {
-        return Ok(());
+    if !cfg!(test) {
+        revoke_session(&token, sid, &req.session_type).map_err(SessionError::Upstream)?;
     }
-    revoke_session(&token, sid, &req.session_type).map_err(SessionError::Upstream)
+    let _ = cursor_accounts::unlock_session(&state.data_dir, hash, sid);
+    Ok(())
+}
+
+/// 账号级设置（自动刷新 / 会话监控 / 锁定集合）的部分更新。
+fn put_account_settings(state: &PanelState, hash: &str, body: &[u8]) -> Result<bool> {
+    let patch: cursor_accounts::SettingsPatch = serde_json::from_slice(body).context("JSON")?;
+    if let Some(ids) = &patch.locked_sessions {
+        for id in ids {
+            let ok = !id.is_empty() && id.len() <= 128 && id.chars().all(|c| c.is_ascii_hexdigit());
+            if !ok {
+                anyhow::bail!("session_id 无效");
+            }
+        }
+    }
+    let found = cursor_accounts::set_settings(&state.data_dir, hash, &patch)?;
+    if found {
+        state.poke_guard();
+    }
+    Ok(found)
+}
+
+/// 立即执行一轮会话检查（监控关闭时也可手动触发）。测试环境不出网。
+fn post_sessions_check(state: &PanelState, hash: &str) -> Result<serde_json::Value, SessionError> {
+    let extras = cursor_accounts::load(&state.data_dir).unwrap_or_default();
+    let Some(acct) = extras.accounts.iter().find(|a| a.account_hash == hash) else {
+        return Err(SessionError::NoAccount);
+    };
+    if cfg!(test) {
+        return Ok(serde_json::json!({
+            "sessions": [],
+            "revoked": [],
+            "last_check_at": serde_json::Value::Null,
+        }));
+    }
+    let _busy = state.guard_check_lock();
+    match crate::session_guard::check_account(&state.data_dir, acct) {
+        Ok(out) => {
+            // 检查时间变了，让守护线程重排下一次到期
+            state.poke_guard();
+            Ok(serde_json::json!({
+                "sessions": out.sessions,
+                "revoked": out.revoked,
+                "last_check_at": out.last_check_at,
+            }))
+        }
+        Err(crate::session_guard::CheckError::Upstream(e)) => Err(SessionError::Upstream(e)),
+        Err(crate::session_guard::CheckError::Io(e)) => Err(SessionError::Internal(e.to_string())),
+    }
 }
 
 fn refresh_account_plan(state: &PanelState, hash: &str) -> Result<()> {
@@ -1068,6 +1159,8 @@ fn account_token(
 
 fn apply_cached_plan(state: &PanelState, views: &mut [AccountView]) {
     let mut credits = crate::cursor_credits::load(&state.data_dir);
+    let guard_states = crate::session_guard::load(&state.data_dir);
+    let now = Utc::now();
     for view in views {
         if let Some(entry) = state.cached_plan(&view.account_hash) {
             view.snapshot = entry.snapshot;
@@ -1078,6 +1171,15 @@ fn apply_cached_plan(state: &PanelState, views: &mut [AccountView]) {
         view.credits = credits
             .remove(&view.account_hash)
             .filter(crate::cursor_credits::CreditEntry::has_credit);
+        // 会话监控摘要：只对已加入账号有意义
+        if view.stored {
+            view.guard = crate::session_guard::view(
+                guard_states.get(&view.account_hash),
+                view.session_guard,
+                &view.guard_interval,
+                now,
+            );
+        }
     }
 }
 
@@ -1603,6 +1705,171 @@ mod tests {
         let path = format!("/v1/cursor/accounts/{hash}/refresh");
         let (st, _, out) = dispatch(&state, "POST", &path, b"");
         assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+    }
+
+    #[test]
+    fn settings_endpoint_validates_and_persists() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let acct = status["cursor_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_label"] == "t@e.com")
+            .cloned()
+            .expect("test account");
+        // 新账号带默认设置
+        assert_eq!(acct["auto_refresh"], true);
+        assert_eq!(acct["refresh_interval"], "300s");
+        assert_eq!(acct["session_guard"], false);
+        assert_eq!(acct["guard_interval"], "60s");
+        let hash = acct["account_hash"].as_str().unwrap().to_string();
+        let path = format!("/v1/cursor/accounts/{hash}/settings");
+
+        // 未知账号 404
+        let (st, _, _) = dispatch(
+            &state,
+            "PUT",
+            "/v1/cursor/accounts/nope/settings",
+            br#"{"auto_refresh":false}"#,
+        );
+        assert_eq!(st, 404);
+        // 周期非法 400
+        let (st, _, _) = dispatch(&state, "PUT", &path, br#"{"refresh_interval":"nope"}"#);
+        assert_eq!(st, 400);
+        let (st, _, _) = dispatch(&state, "PUT", &path, br#"{"guard_interval":"5s"}"#);
+        assert_eq!(st, 400);
+        // 非法锁定 id 400
+        let (st, _, _) = dispatch(&state, "PUT", &path, br#"{"locked_sessions":["../x"]}"#);
+        assert_eq!(st, 400);
+        // 合法更新并回读
+        let body = serde_json::json!({
+            "auto_refresh": false,
+            "refresh_interval": "10m",
+            "session_guard": true,
+            "guard_interval": "30s",
+            "locked_sessions": ["abc123"],
+        });
+        let (st, _, out) = dispatch(&state, "PUT", &path, &serde_json::to_vec(&body).unwrap());
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let acct = status["cursor_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_hash"] == hash.as_str())
+            .cloned()
+            .unwrap();
+        assert_eq!(acct["auto_refresh"], false);
+        assert_eq!(acct["refresh_interval"], "10m");
+        assert_eq!(acct["session_guard"], true);
+        assert_eq!(acct["guard_interval"], "30s");
+        assert_eq!(acct["locked_sessions"][0], "abc123");
+        // 监控开启后 status 带 guard 摘要（下次检测时刻）
+        assert!(acct["guard"]["next_check_at"].is_string());
+    }
+
+    #[test]
+    fn sessions_check_route_validates_account() {
+        let (_dir, state) = setup();
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts/nope/sessions/check",
+            b"",
+        );
+        assert_eq!(st, 404);
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        // 本机可能存在真实 IDE 登录被扫描进列表，按邮箱定位测试账号
+        let hash = status["cursor_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_label"] == "t@e.com")
+            .and_then(|a| a["account_hash"].as_str())
+            .unwrap()
+            .to_string();
+        let (st, _, out) = dispatch(
+            &state,
+            "POST",
+            &format!("/v1/cursor/accounts/{hash}/sessions/check"),
+            b"",
+        );
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&out));
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(v["sessions"].as_array().unwrap().is_empty());
+        assert!(v["revoked"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn revoke_removes_locked_session_mark() {
+        let (_dir, state) = setup();
+        let jwt = "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ1c2VyX3QiLCJlbWFpbCI6InRAZS5jb20ifQ.sig";
+        let body = serde_json::json!({ "token": jwt });
+        dispatch(
+            &state,
+            "POST",
+            "/v1/cursor/accounts",
+            &serde_json::to_vec(&body).unwrap(),
+        );
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        // 本机可能存在真实 IDE 登录被扫描进列表，按邮箱定位测试账号
+        let hash = status["cursor_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_label"] == "t@e.com")
+            .and_then(|a| a["account_hash"].as_str())
+            .unwrap()
+            .to_string();
+        let settings = format!("/v1/cursor/accounts/{hash}/settings");
+        let (st, _, _) = dispatch(
+            &state,
+            "PUT",
+            &settings,
+            br#"{"locked_sessions":["abc123","def456"]}"#,
+        );
+        assert_eq!(st, 200);
+        let revoke = format!("/v1/cursor/accounts/{hash}/sessions/revoke");
+        let (st, _, _) = dispatch(
+            &state,
+            "POST",
+            &revoke,
+            br#"{"session_id":"abc123","type":"SESSION_TYPE_WEB"}"#,
+        );
+        assert_eq!(st, 200);
+        let (_st, _, status) = dispatch(&state, "GET", "/v1/status", b"");
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let locked = status["cursor_accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["account_hash"] == hash.as_str())
+            .map(|a| a["locked_sessions"].as_array().unwrap().clone())
+            .unwrap();
+        assert_eq!(locked.len(), 1);
+        assert_eq!(locked[0], "def456");
     }
 
     #[test]

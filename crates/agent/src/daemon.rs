@@ -90,6 +90,7 @@ pub fn run_loop(
             eprintln!("面板退出: {err:#}");
         }
     });
+    crate::session_guard::spawn(std::sync::Arc::clone(&state));
     if let Some(d) = interval_override {
         println!(
             "daemon 每 {} 对齐钟面同步一次（CLI 覆盖），Ctrl+C 结束",
