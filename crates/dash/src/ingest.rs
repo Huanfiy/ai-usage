@@ -66,6 +66,7 @@ pub fn ingest(
         };
         if is_account_scoped(&bucket.source) {
             upsert_account_host(&*tx, &hid, &bucket.account_label, &now)?;
+            unarchive_on_activity(&*tx, &bucket.account_hash, &bucket.bucket_start.to_rfc3339())?;
         }
         match upsert_bucket(&*tx, &hid, &bucket, &now)? {
             Upsert::Inserted | Upsert::Replaced => resp.ingested += 1,
@@ -152,6 +153,17 @@ fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> 
             u.credit_expires_at,
             u.credit_label
         ],
+    )?;
+    Ok(())
+}
+
+/// 手动归档后出现更新的真实用量（桶时刻晚于归档时刻）即自动恢复；
+/// 全量重传旧桶不触发。快照上报（`upsert_cursor_usage`）从不解归档。
+fn unarchive_on_activity(conn: &Connection, account_hash: &str, bucket_start: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE cursor_account_usage SET archived_at = NULL
+         WHERE account_hash = ?1 AND archived_at IS NOT NULL AND archived_at < ?2",
+        params![account_hash, bucket_start],
     )?;
     Ok(())
 }
@@ -716,7 +728,7 @@ mod tests {
                 r.get(0)
             })?;
             assert_eq!(n, 1);
-            let rows = crate::db::list_cursor_accounts(c)?;
+            let rows = crate::db::list_cursor_accounts(c, 7)?;
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0]["bot_available"], true);
             assert_eq!(rows[0]["bot_percent"], 0.5);
@@ -724,6 +736,68 @@ mod tests {
             assert_eq!(rows[0]["credit_total_cents"], 10000);
             assert_eq!(rows[0]["credit_expires_at"], "2026-09-03T19:06:49Z");
             assert_eq!(rows[0]["credit_label"], "Cursor Grok 4.6 Credit");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn archived_account_restores_only_on_new_activity() {
+        use ai_usage_protocol::CursorAccountUsage;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = hash_a();
+            let archived_at = |c: &Connection| -> Option<String> {
+                c.query_row(
+                    "SELECT archived_at FROM cursor_account_usage WHERE account_hash=?1",
+                    params![h],
+                    |r| r.get(0),
+                )
+                .unwrap()
+            };
+            let snap = |fetched: chrono::DateTime<Utc>| CursorAccountUsage {
+                account_hash: h.clone(),
+                account_label: "a@x.com".into(),
+                api_percent: Some(10.0),
+                fetched_at: fetched,
+                ..CursorAccountUsage::default()
+            };
+            let send_snap = |c: &Connection, usage: CursorAccountUsage| {
+                ingest(
+                    c,
+                    "hostA",
+                    "pc1",
+                    Some("0.1.0"),
+                    None,
+                    IngestRequest {
+                        schema_version: 1,
+                        hostname: Some("pc1".into()),
+                        agent_version: Some("0.1.0".into()),
+                        timezone: None,
+                        buckets: vec![],
+                        sessions: vec![],
+                        cursor_accounts: vec![usage],
+                    },
+                )
+                .unwrap()
+            };
+            send_snap(c, snap(Utc::now()));
+            assert!(crate::db::archive_cursor_account(c, &h)?);
+
+            // 新快照到达只刷新数字，不解归档（账号还挂在采集端 ≠ 在用）
+            send_snap(c, snap(Utc::now() + chrono::Duration::minutes(1)));
+            assert!(archived_at(c).is_some());
+
+            // 重传旧桶（bucket_start 早于归档时刻）不恢复
+            ingest_one(c, "hostA", "pc1", vec![cursor_bucket(&h, "a@x.com", 5)]);
+            assert!(archived_at(c).is_some());
+
+            // 归档之后的真实用量自动恢复
+            let mut fresh = cursor_bucket(&h, "a@x.com", 5);
+            fresh.bucket_start = round_to_half_hour(Utc::now() + chrono::Duration::hours(2));
+            ingest_one(c, "hostA", "pc1", vec![fresh]);
+            assert!(archived_at(c).is_none());
             Ok(())
         })
         .unwrap();

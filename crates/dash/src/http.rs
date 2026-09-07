@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use ai_usage_protocol::{
-    hash_token, host_id_from_token, is_valid_claim_hash, IngestRequest, JoinCreated,
-    JoinPollResponse, JoinRequest, JoinStatus, JOIN_IP_LIMIT, JOIN_PENDING_MAX, JOIN_TTL_SECS,
+    hash_token, host_id_from_token, is_valid_account_hash, is_valid_claim_hash, IngestRequest,
+    JoinCreated, JoinPollResponse, JoinRequest, JoinStatus, JOIN_IP_LIMIT, JOIN_PENDING_MAX,
+    JOIN_TTL_SECS,
 };
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -55,6 +56,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/hosts", get(hosts))
         .route("/v1/hosts/{host_id}", delete(delete_host))
         .route("/v1/cursor-accounts", get(cursor_accounts))
+        .route(
+            "/v1/cursor-accounts/{account_hash}/archive",
+            post(archive_cursor_account),
+        )
+        .route(
+            "/v1/cursor-accounts/{account_hash}/restore",
+            post(restore_cursor_account),
+        )
         .route("/v1/filters", get(filters))
         .route("/v1/join", post(create_join))
         .route("/v1/join/{join_id}", get(poll_join))
@@ -248,11 +257,50 @@ async fn cursor_accounts(
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     require_ui(&st, &headers)?;
+    let stale_days = st.config.cursor_stale_days;
     let out = st
         .db
-        .with(db::list_cursor_accounts)
+        .with(|c| db::list_cursor_accounts(c, stale_days))
         .map_err(ApiError::internal)?;
-    Ok(Json(json!({ "items": out })))
+    Ok(Json(json!({ "items": out, "stale_days": stale_days })))
+}
+
+async fn archive_cursor_account(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(account_hash): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    if !is_valid_account_hash(&account_hash) {
+        return Err(ApiError::Bad("invalid account hash".into()));
+    }
+    let ok = st
+        .db
+        .with(|c| db::archive_cursor_account(c, &account_hash))
+        .map_err(ApiError::internal)?;
+    if !ok {
+        return Err(ApiError::Bad("account not found".into()));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn restore_cursor_account(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(account_hash): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    if !is_valid_account_hash(&account_hash) {
+        return Err(ApiError::Bad("invalid account hash".into()));
+    }
+    let ok = st
+        .db
+        .with(|c| db::restore_cursor_account(c, &account_hash))
+        .map_err(ApiError::internal)?;
+    if !ok {
+        return Err(ApiError::Bad("account not found".into()));
+    }
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn filters(

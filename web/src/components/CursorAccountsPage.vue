@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, type BreakdownItem, type CursorAccountRow, type Query } from '../api'
 import { fmtTime, fmtTokens, fmtUsd } from '../format'
 
 const items = ref<CursorAccountRow[]>([])
+const staleDays = ref(7)
 const err = ref('')
 const loading = ref(false)
 const loaded = ref(false)
@@ -23,6 +24,7 @@ async function load() {
   try {
     const r = await api.cursorAccounts()
     items.value = r.items ?? []
+    staleDays.value = r.stale_days ?? 7
     err.value = ''
   } catch (e) {
     err.value = e instanceof Error ? e.message : String(e)
@@ -30,6 +32,87 @@ async function load() {
     loading.value = false
     loaded.value = true
   }
+}
+
+// 活跃 = 未手动归档且快照未过期；其余折叠到「已归档」区
+const active = computed(() => items.value.filter((a) => !a.archived_at && !a.stale))
+const archived = computed(() => items.value.filter((a) => a.archived_at || a.stale))
+
+const archOpen = ref(false)
+const acting = ref('')
+
+async function archive(a: CursorAccountRow) {
+  acting.value = a.account_hash
+  try {
+    await api.archiveCursorAccount(a.account_hash)
+    await load()
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    acting.value = ''
+  }
+}
+
+async function restore(a: CursorAccountRow) {
+  acting.value = a.account_hash
+  try {
+    await api.restoreCursorAccount(a.account_hash)
+    await load()
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    acting.value = ''
+  }
+}
+
+function archiveReason(a: CursorAccountRow): string {
+  if (a.archived_at) return `手动归档 ${fmtTime(a.archived_at)}`
+  const days = Math.max(1, Math.floor((Date.now() - new Date(a.fetched_at).getTime()) / 86_400_000))
+  return `已 ${days} 天未上报`
+}
+
+// 已归档账号的历史总结：该账号有记录以来全部用量的费用估算与 token 数。
+// 只在展开「已归档」时按需拉，结果按 hash 缓存
+type Lifetime = { loading: boolean; error: string; totalTokens: number; totalCost: number }
+const lifetime = ref<Record<string, Lifetime>>({})
+const LIFETIME_FROM = '2020-01-01T00:00:00.000Z'
+
+async function loadLifetime(a: CursorAccountRow) {
+  const key = a.account_hash
+  const cached = lifetime.value[key]
+  if (cached && !cached.error && !cached.loading) return
+  lifetime.value[key] = { loading: true, error: '', totalTokens: 0, totalCost: 0 }
+  const q: Query = { from: LIFETIME_FROM, to: new Date().toISOString(), host: `acct:${key}` }
+  try {
+    const r = await api.breakdown(q, 'source')
+    const all = r.items ?? []
+    lifetime.value[key] = {
+      loading: false,
+      error: '',
+      totalTokens: all.reduce((s, x) => s + (x.tokens || 0), 0),
+      totalCost: all.reduce((s, x) => s + (x.cost_usd || 0), 0),
+    }
+  } catch (e) {
+    lifetime.value[key] = {
+      loading: false,
+      error: e instanceof Error ? e.message : String(e),
+      totalTokens: 0,
+      totalCost: 0,
+    }
+  }
+}
+
+watch([archOpen, archived], ([open, list]) => {
+  if (!open) return
+  for (const a of list) void loadLifetime(a)
+})
+
+function lifetimeText(a: CursorAccountRow): string {
+  const l = lifetime.value[a.account_hash]
+  if (!l || l.loading) return '累计 …'
+  if (l.error) return '累计 —'
+  if (!l.totalTokens) return '累计 无用量记录'
+  return `累计 ${fmtUsd(l.totalCost)} · ${fmtTokens(l.totalTokens)}`
 }
 
 function onVisibility() {
@@ -177,7 +260,8 @@ function onLeave() {
       </div>
       <p class="lead">
         快照由各采集端在 Cursor 同步周期拉取并上报（API / Auto 来自 usage-summary，Bot 来自原生
-        RPC，信用余额来自 credit-grants），展示的是当前状态，不随看板时间范围筛选变化。
+        RPC，信用余额来自 credit-grants），展示的是当前状态，不随看板时间范围筛选变化。超过
+        {{ staleDays }} 天未上报的账号自动折叠到「已归档」。
       </p>
 
       <div v-if="loaded && !items.length" class="empty">
@@ -185,9 +269,11 @@ function onLeave() {
         账号后，将随下一轮 Cursor 同步出现在这里。
       </div>
 
+      <div v-else-if="loaded && !active.length" class="empty">全部账号已归档。</div>
+
       <div v-else class="acct-grid">
         <article
-          v-for="a in items"
+          v-for="a in active"
           :key="a.account_hash"
           class="acct"
           @mouseenter="onEnter(a)"
@@ -271,7 +357,16 @@ function onLeave() {
               </div>
             </div>
           </div>
-          <div class="foot">快照 {{ fmtTime(a.fetched_at) }}</div>
+          <div class="foot">
+            <span>快照 {{ fmtTime(a.fetched_at) }}</span>
+            <button
+              type="button"
+              class="archive-btn"
+              :disabled="acting === a.account_hash"
+              title="归档该账号卡片；出现新用量时自动恢复"
+              @click.stop="archive(a)"
+            >归档</button>
+          </div>
 
           <div v-if="hoverHash === a.account_hash" class="usage-pop">
             <div class="pop-title">近 {{ USAGE_DAYS }} 天模型用量 · 费用为估算</div>
@@ -296,6 +391,36 @@ function onLeave() {
             </template>
           </div>
         </article>
+      </div>
+
+      <div v-if="archived.length" class="archived-sec">
+        <button type="button" class="arch-toggle" @click="archOpen = !archOpen">
+          {{ archOpen ? '▾' : '▸' }} 已归档 · {{ archived.length }}
+        </button>
+        <div v-if="archOpen" class="arch-grid">
+          <article v-for="a in archived" :key="a.account_hash" class="arch-card">
+            <div class="arch-main">
+              <span class="arch-email" :title="a.account_label">{{ a.account_label }}</span>
+              <span v-if="a.membership" class="tag">{{ a.membership }}</span>
+            </div>
+            <div class="arch-meta">
+              <span>{{ archiveReason(a) }}</span>
+              <span>快照 {{ fmtTime(a.fetched_at) }}</span>
+            </div>
+            <div
+              class="arch-sum"
+              :class="{ err: lifetime[a.account_hash]?.error }"
+              :title="lifetime[a.account_hash]?.error || '该账号有记录以来全部用量的费用估算与 token 数，非账单'"
+            >{{ lifetimeText(a) }}</div>
+            <button
+              v-if="a.archived_at"
+              type="button"
+              class="arch-restore"
+              :disabled="acting === a.account_hash"
+              @click="restore(a)"
+            >恢复</button>
+          </article>
+        </div>
       </div>
     </section>
   </div>
@@ -548,5 +673,112 @@ function onLeave() {
   color: var(--muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.archive-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.acct:hover .archive-btn {
+  opacity: 1;
+}
+.archive-btn:hover:not(:disabled) {
+  border-color: #3d4b5e;
+  color: var(--text);
+}
+.archive-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.archived-sec {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.arch-toggle {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.arch-toggle:hover {
+  color: var(--text);
+}
+.arch-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.arch-card {
+  background: var(--bg-elev-2);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  opacity: 0.85;
+}
+.arch-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.arch-email {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.arch-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.arch-sum {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.arch-sum.err {
+  color: var(--muted);
+}
+.arch-restore {
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.arch-restore:hover:not(:disabled) {
+  border-color: #3d4b5e;
+  background: #1c2430;
+}
+.arch-restore:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

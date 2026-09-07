@@ -14,10 +14,17 @@ pub struct DashConfig {
     pub ui_token: String,
     #[serde(default)]
     pub hide_projects: bool,
+    /// Cursor 账号快照超过该天数未更新则在 UI 自动折叠到「已归档」。
+    #[serde(default = "default_cursor_stale_days")]
+    pub cursor_stale_days: u32,
 }
 
 fn default_bind() -> String {
     "127.0.0.1:3847".into()
+}
+
+fn default_cursor_stale_days() -> u32 {
+    7
 }
 
 impl Default for DashConfig {
@@ -26,6 +33,7 @@ impl Default for DashConfig {
             bind: default_bind(),
             ui_token: String::new(),
             hide_projects: false,
+            cursor_stale_days: default_cursor_stale_days(),
         }
     }
 }

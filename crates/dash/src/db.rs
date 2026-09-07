@@ -21,6 +21,7 @@ impl Db {
         migrate_session_tokens(&conn)?;
         migrate_host_timezone(&conn)?;
         migrate_cursor_credits(&conn)?;
+        migrate_cursor_archive(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -121,7 +122,8 @@ CREATE TABLE IF NOT EXISTS cursor_account_usage (
   credit_expires_at TEXT,
   credit_label TEXT,
   fetched_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  archived_at TEXT
 );
 CREATE TABLE IF NOT EXISTS join_requests (
   join_id TEXT PRIMARY KEY,
@@ -212,6 +214,23 @@ fn migrate_cursor_credits(conn: &Connection) -> Result<()> {
         if !existing.contains(name) {
             conn.execute(sql, [])?;
         }
+    }
+    Ok(())
+}
+
+fn migrate_cursor_archive(conn: &Connection) -> Result<()> {
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(cursor_account_usage)")?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<_>>()?;
+        names
+    };
+    if !existing.contains("archived_at") {
+        conn.execute(
+            "ALTER TABLE cursor_account_usage ADD COLUMN archived_at TEXT",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -519,19 +538,48 @@ pub fn claim_join(conn: &Connection, join_id: &str) -> Result<Option<(String, St
     Ok(Some((token, host_id)))
 }
 
+/// 手动归档一个 Cursor 账号卡片；返回是否命中该账号。
+pub fn archive_cursor_account(conn: &Connection, account_hash: &str) -> Result<bool> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let n = conn.execute(
+        "UPDATE cursor_account_usage SET archived_at = ?1
+         WHERE account_hash = ?2 AND archived_at IS NULL",
+        params![now, account_hash],
+    )?;
+    Ok(n > 0)
+}
+
+/// 手动恢复一个已归档的 Cursor 账号卡片；返回是否命中该账号。
+pub fn restore_cursor_account(conn: &Connection, account_hash: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE cursor_account_usage SET archived_at = NULL
+         WHERE account_hash = ?1 AND archived_at IS NOT NULL",
+        params![account_hash],
+    )?;
+    Ok(n > 0)
+}
+
 /// 全部 Cursor 账号的最新套餐快照，按显示名排序。
-pub fn list_cursor_accounts(conn: &Connection) -> Result<Vec<serde_json::Value>> {
+/// `stale_days`：快照超过该天数未更新则标记 `stale`（所有采集端都不再上报它）。
+pub fn list_cursor_accounts(conn: &Connection, stale_days: u32) -> Result<Vec<serde_json::Value>> {
+    let now = chrono::Utc::now();
+    let stale_after = chrono::Duration::days(i64::from(stale_days));
     let mut stmt = conn.prepare(
         "SELECT account_hash, account_label, membership, subscription_status, billing_cycle_end,
                 api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
                 bot_available, plan_used, plan_limit, included_cents, bonus_cents,
                 auto_used, auto_limit, fetched_at, updated_at,
-                credit_remaining_cents, credit_total_cents, credit_expires_at, credit_label
+                credit_remaining_cents, credit_total_cents, credit_expires_at, credit_label,
+                archived_at
          FROM cursor_account_usage
          ORDER BY account_label COLLATE NOCASE",
     )?;
     let rows = stmt
         .query_map([], |r| {
+            let fetched_at = r.get::<_, String>(17)?;
+            let stale = chrono::DateTime::parse_from_rfc3339(&fetched_at)
+                .map(|t| now - t.with_timezone(&chrono::Utc) > stale_after)
+                .unwrap_or(false);
             Ok(serde_json::json!({
                 "account_hash": r.get::<_, String>(0)?,
                 "account_label": r.get::<_, String>(1)?,
@@ -550,12 +598,14 @@ pub fn list_cursor_accounts(conn: &Connection) -> Result<Vec<serde_json::Value>>
                 "bonus_cents": r.get::<_, Option<i64>>(14)?,
                 "auto_used": r.get::<_, Option<i64>>(15)?,
                 "auto_limit": r.get::<_, Option<i64>>(16)?,
-                "fetched_at": r.get::<_, String>(17)?,
+                "fetched_at": fetched_at,
                 "updated_at": r.get::<_, String>(18)?,
                 "credit_remaining_cents": r.get::<_, Option<i64>>(19)?,
                 "credit_total_cents": r.get::<_, Option<i64>>(20)?,
                 "credit_expires_at": r.get::<_, Option<String>>(21)?,
                 "credit_label": r.get::<_, Option<String>>(22)?,
+                "archived_at": r.get::<_, Option<String>>(23)?,
+                "stale": stale,
             }))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -630,10 +680,43 @@ mod tests {
         }
         let db = Db::open(&path).unwrap();
         db.with(|c| {
-            let rows = list_cursor_accounts(c)?;
+            let rows = list_cursor_accounts(c, 7)?;
             assert_eq!(rows.len(), 1);
             assert!(rows[0]["credit_remaining_cents"].is_null());
             assert!(rows[0]["credit_label"].is_null());
+            // 迁移补出 archived_at 列；旧快照（2026-01-01）超过 7 天未更新即 stale
+            assert!(rows[0]["archived_at"].is_null());
+            assert_eq!(rows[0]["stale"], true);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn archive_and_restore_cursor_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let h = "a".repeat(32);
+            let now = chrono::Utc::now().to_rfc3339();
+            c.execute(
+                "INSERT INTO cursor_account_usage(account_hash, account_label, fetched_at, updated_at)
+                 VALUES(?1, 'a@x.com', ?2, ?2)",
+                params![h, now],
+            )?;
+            // 未知账号不命中
+            assert!(!archive_cursor_account(c, "unknown")?);
+            // 归档：首次命中，重复归档不命中
+            assert!(archive_cursor_account(c, &h)?);
+            assert!(!archive_cursor_account(c, &h)?);
+            let rows = list_cursor_accounts(c, 7)?;
+            assert!(rows[0]["archived_at"].is_string());
+            assert_eq!(rows[0]["stale"], false, "刚上报的快照不算 stale");
+            // 恢复：首次命中，重复恢复不命中
+            assert!(restore_cursor_account(c, &h)?);
+            assert!(!restore_cursor_account(c, &h)?);
+            let rows = list_cursor_accounts(c, 7)?;
+            assert!(rows[0]["archived_at"].is_null());
             Ok(())
         })
         .unwrap();

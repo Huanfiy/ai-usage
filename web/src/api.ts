@@ -90,6 +90,8 @@ export type CursorAccountRow = {
   credit_label?: string | null
   fetched_at: string
   updated_at: string
+  archived_at?: string | null
+  stale: boolean
 }
 
 export type SessionRow = {
@@ -150,7 +152,20 @@ export const api = {
   activity: (q: Query) => get<Activity>('/v1/activity' + qs(q)),
   sessions: (q: Query) => get<{ items: SessionRow[] }>('/v1/sessions' + qs({ ...q, limit: 200 })),
   hosts: () => get<{ items: HostRow[] }>('/v1/hosts'),
-  cursorAccounts: () => get<{ items: CursorAccountRow[] }>('/v1/cursor-accounts'),
+  cursorAccounts: () =>
+    get<{ items: CursorAccountRow[]; stale_days: number }>('/v1/cursor-accounts'),
+  archiveCursorAccount: async (hash: string) => {
+    const r = await fetch(`/v1/cursor-accounts/${encodeURIComponent(hash)}/archive`, {
+      method: 'POST',
+    })
+    if (!r.ok) throw new Error(`/v1/cursor-accounts/${hash}/archive ${r.status}`)
+  },
+  restoreCursorAccount: async (hash: string) => {
+    const r = await fetch(`/v1/cursor-accounts/${encodeURIComponent(hash)}/restore`, {
+      method: 'POST',
+    })
+    if (!r.ok) throw new Error(`/v1/cursor-accounts/${hash}/restore ${r.status}`)
+  },
   filters: (q: Query) => get<{ sources: string[]; models: string[]; projects: string[] }>('/v1/filters' + qs(q)),
   pricing: () => get<PricingStatus>('/v1/pricing'),
   updatePricing: async () => {
