@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, type BreakdownItem, type CursorAccountRow, type Query } from '../api'
-import { fmtTime, fmtTokens, fmtUsd } from '../format'
+import { fmtTime, fmtTimeTick, fmtTokens, fmtUsd } from '../format'
+import { billingCycleWindow } from '../timeRange'
 
 const items = ref<CursorAccountRow[]>([])
 const staleDays = ref(7)
@@ -12,6 +13,10 @@ const loaded = ref(false)
 type AcctUsage = {
   loading: boolean
   error: string
+  /** 统计窗口起点（ISO）；账期切换后与新窗口不一致即视为缓存失效 */
+  from: string
+  /** 弹层标题里的窗口说明，如「本账期（09/17 03:00 起）」 */
+  label: string
   models: BreakdownItem[]
   totalTokens: number
   totalCost: number
@@ -167,20 +172,31 @@ function countdown(iso: string | null | undefined): { text: string; soon: boolea
   return { text, soon: ms < 86_400_000 }
 }
 
-const USAGE_DAYS = 30
+const FALLBACK_DAYS = 30
 
-// 悬浮时按需拉取该账号（acct:<hash>）近 30 天的模型分布与费用估算
+// 悬浮弹层的统计窗口：本账期（billing_cycle_start → 现在）。
+// 旧采集端不报 start 时按月账期从 billing_cycle_end 反推；连 end 都没有才退回近 30 天。
+type UsageWindow = { from: Date; to: Date; label: string }
+function usageWindow(a: CursorAccountRow, now = new Date()): UsageWindow {
+  const cycle = billingCycleWindow(a.billing_cycle_start, a.billing_cycle_end, now)
+  if (cycle) {
+    return { from: cycle.from, to: cycle.to, label: `本账期（${fmtTimeTick(cycle.from.toISOString(), true)} 起）` }
+  }
+  return { from: new Date(now.getTime() - FALLBACK_DAYS * 86_400_000), to: now, label: `近 ${FALLBACK_DAYS} 天` }
+}
+
+// 悬浮时按需拉取该账号（acct:<hash>）本账期的模型分布与费用估算
 async function onEnter(a: CursorAccountRow) {
   hoverHash.value = a.account_hash
   const key = a.account_hash
+  const win = usageWindow(a)
+  const from = win.from.toISOString()
   const cached = usage.value[key]
-  if (cached && !cached.error && !cached.loading) return
-  usage.value[key] = { loading: true, error: '', models: [], totalTokens: 0, totalCost: 0 }
-  const to = new Date()
-  const from = new Date(to.getTime() - USAGE_DAYS * 86_400_000)
+  if (cached && !cached.error && !cached.loading && cached.from === from) return
+  usage.value[key] = { loading: true, error: '', from, label: win.label, models: [], totalTokens: 0, totalCost: 0 }
   const q: Query = {
-    from: from.toISOString(),
-    to: to.toISOString(),
+    from,
+    to: win.to.toISOString(),
     host: `acct:${key}`,
   }
   try {
@@ -189,6 +205,8 @@ async function onEnter(a: CursorAccountRow) {
     usage.value[key] = {
       loading: false,
       error: '',
+      from,
+      label: win.label,
       models: all.slice(0, 10),
       totalTokens: all.reduce((s, x) => s + (x.tokens || 0), 0),
       totalCost: all.reduce((s, x) => s + (x.cost_usd || 0), 0),
@@ -197,6 +215,8 @@ async function onEnter(a: CursorAccountRow) {
     usage.value[key] = {
       loading: false,
       error: e instanceof Error ? e.message : String(e),
+      from,
+      label: win.label,
       models: [],
       totalTokens: 0,
       totalCost: 0,
@@ -307,7 +327,10 @@ function onLeave() {
           </div>
 
           <div v-if="hoverHash === a.account_hash" class="usage-pop">
-            <div class="pop-title">近 {{ USAGE_DAYS }} 天模型用量 · 费用为估算</div>
+            <div
+              class="pop-title"
+              :title="usage[a.account_hash] ? `统计窗口 ${fmtTime(usage[a.account_hash].from)} → 现在` : undefined"
+            >{{ usage[a.account_hash]?.label ?? '本账期' }}模型用量 · 费用为估算</div>
             <div v-if="usage[a.account_hash]?.loading" class="pop-hint">加载中…</div>
             <div v-else-if="usage[a.account_hash]?.error" class="pop-hint pop-err">
               {{ usage[a.account_hash].error }}

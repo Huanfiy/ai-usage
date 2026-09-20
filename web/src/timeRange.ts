@@ -149,3 +149,38 @@ export function saveStoredRange(r: AppliedRange): void {
     /* ignore quota */
   }
 }
+
+/** 上一个月的同一时刻（UTC 计）；日期超出上月天数时钳到上月最后一天（3/31 → 2/28）。 */
+export function monthBefore(d: Date): Date {
+  const x = new Date(d)
+  const day = x.getUTCDate()
+  x.setUTCDate(1)
+  x.setUTCMonth(x.getUTCMonth() - 1)
+  const last = new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth() + 1, 0)).getUTCDate()
+  x.setUTCDate(Math.min(day, last))
+  return x
+}
+
+export type CycleWindow = {
+  from: Date
+  to: Date
+  /** true = 没有 start，按月账期从 end 反推 */
+  derived: boolean
+}
+
+/**
+ * Cursor 当前账期的统计窗口：`start → now`。
+ * 优先服务端 `billing_cycle_start`；旧采集端只上报 `billing_cycle_end` 时按月账期反推起点；
+ * 两者都无效返回 null。
+ */
+export function billingCycleWindow(
+  start: string | null | undefined,
+  end: string | null | undefined,
+  now: Date = new Date(),
+): CycleWindow | null {
+  const s = start ? new Date(start) : null
+  if (s && Number.isFinite(s.getTime())) return { from: s, to: now, derived: false }
+  const e = end ? new Date(end) : null
+  if (!e || !Number.isFinite(e.getTime())) return null
+  return { from: monthBefore(e), to: now, derived: true }
+}

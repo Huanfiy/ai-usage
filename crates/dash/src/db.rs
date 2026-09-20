@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS cursor_account_usage (
   account_hash TEXT PRIMARY KEY,
   account_label TEXT NOT NULL,
   membership TEXT,
+  billing_cycle_start TEXT,
   billing_cycle_end TEXT,
   api_percent REAL,
   auto_percent REAL,
@@ -149,7 +150,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_missing_columns(
         conn,
         "cursor_account_usage",
-        &[("total_used_cents", "INTEGER"), ("archived_at", "TEXT")],
+        &[
+            ("total_used_cents", "INTEGER"),
+            ("archived_at", "TEXT"),
+            ("billing_cycle_start", "TEXT"),
+        ],
     )
 }
 
@@ -484,7 +489,8 @@ pub fn list_cursor_accounts(conn: &Connection, stale_days: u32) -> Result<Vec<se
     let mut stmt = conn.prepare(
         "SELECT account_hash, account_label, membership, billing_cycle_end,
                 api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
-                bot_available, total_used_cents, fetched_at, updated_at, archived_at
+                bot_available, total_used_cents, fetched_at, updated_at, archived_at,
+                billing_cycle_start
          FROM cursor_account_usage
          ORDER BY account_label COLLATE NOCASE",
     )?;
@@ -498,6 +504,7 @@ pub fn list_cursor_accounts(conn: &Connection, stale_days: u32) -> Result<Vec<se
                 "account_hash": r.get::<_, String>(0)?,
                 "account_label": r.get::<_, String>(1)?,
                 "membership": r.get::<_, Option<String>>(2)?,
+                "billing_cycle_start": r.get::<_, Option<String>>(14)?,
                 "billing_cycle_end": r.get::<_, Option<String>>(3)?,
                 "api_percent": r.get::<_, Option<f64>>(4)?,
                 "auto_percent": r.get::<_, Option<f64>>(5)?,
@@ -584,9 +591,11 @@ mod tests {
         db.with(|c| {
             let rows = list_cursor_accounts(c, 7)?;
             assert_eq!(rows.len(), 1);
-            // 迁移补出 total_used_cents 与 archived_at 列；旧快照（2026-01-01）超过 7 天未更新即 stale
+            // 迁移补出 total_used_cents / archived_at / billing_cycle_start 列；
+            // 旧快照（2026-01-01）超过 7 天未更新即 stale
             assert!(rows[0]["total_used_cents"].is_null());
             assert!(rows[0]["archived_at"].is_null());
+            assert!(rows[0]["billing_cycle_start"].is_null());
             assert_eq!(rows[0]["stale"], true);
             Ok(())
         })

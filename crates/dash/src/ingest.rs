@@ -66,7 +66,11 @@ pub fn ingest(
         };
         if is_account_scoped(&bucket.source) {
             upsert_account_host(&*tx, &hid, &bucket.account_label, &now)?;
-            unarchive_on_activity(&*tx, &bucket.account_hash, &bucket.bucket_start.to_rfc3339())?;
+            unarchive_on_activity(
+                &*tx,
+                &bucket.account_hash,
+                &bucket.bucket_start.to_rfc3339(),
+            )?;
         }
         match upsert_bucket(&*tx, &hid, &bucket, &now)? {
             Upsert::Inserted | Upsert::Replaced => resp.ingested += 1,
@@ -97,13 +101,14 @@ pub fn ingest(
 fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO cursor_account_usage(
-            account_hash, account_label, membership, billing_cycle_end,
+            account_hash, account_label, membership, billing_cycle_start, billing_cycle_end,
             api_percent, auto_percent, bot_percent, bot_period_start, bot_next_reset,
             bot_available, total_used_cents, fetched_at, updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
          ON CONFLICT(account_hash) DO UPDATE SET
             account_label=excluded.account_label,
             membership=excluded.membership,
+            billing_cycle_start=excluded.billing_cycle_start,
             billing_cycle_end=excluded.billing_cycle_end,
             api_percent=excluded.api_percent,
             auto_percent=excluded.auto_percent,
@@ -119,6 +124,7 @@ fn upsert_cursor_usage(conn: &Connection, u: &CursorAccountUsage, now: &str) -> 
             u.account_hash,
             u.account_label,
             u.membership,
+            u.billing_cycle_start,
             u.billing_cycle_end,
             u.api_percent,
             u.auto_percent,
@@ -645,6 +651,8 @@ mod tests {
             let mk = |pct: f64, fetched: &str| CursorAccountUsage {
                 account_hash: h.clone(),
                 account_label: "a@x.com".into(),
+                billing_cycle_start: Some("2026-08-12T13:47:51.000Z".into()),
+                billing_cycle_end: Some("2026-09-12T13:47:51.000Z".into()),
                 api_percent: Some(pct),
                 bot_percent: Some(0.5),
                 bot_available: Some(true),
@@ -707,6 +715,8 @@ mod tests {
             assert_eq!(rows[0]["bot_available"], true);
             assert_eq!(rows[0]["bot_percent"], 0.5);
             assert_eq!(rows[0]["total_used_cents"], 100990);
+            assert_eq!(rows[0]["billing_cycle_start"], "2026-08-12T13:47:51.000Z");
+            assert_eq!(rows[0]["billing_cycle_end"], "2026-09-12T13:47:51.000Z");
             Ok(())
         })
         .unwrap();

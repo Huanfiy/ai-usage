@@ -75,6 +75,9 @@ pub struct CursorAccountUsage {
     pub account_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
+    /// 当前账期起止（服务端原值）。`billing_cycle_start` 为后加字段，旧 agent 不发送。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_cycle_start: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_cycle_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -325,6 +325,7 @@ fn account_usage(
         account_hash: acct.account_hash.clone(),
         account_label: acct.account_label.clone(),
         membership: snap.membership,
+        billing_cycle_start: snap.billing_cycle_start,
         billing_cycle_end: snap.billing_cycle_end,
         api_percent: snap.api_percent,
         auto_percent: snap.auto_percent,

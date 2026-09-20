@@ -18,6 +18,9 @@ const SKIP_KEYS: &[&str] = &["refresh_token", "refreshToken"];
 pub struct CursorAccountSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub membership: Option<String>,
+    /// 当前账期起止：服务端 `billingCycleStart` / `billingCycleEnd` 原值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_cycle_start: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_cycle_end: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,6 +157,7 @@ fn email_from_map(map: &serde_json::Map<String, Value>) -> String {
 fn usage_snapshot(usage: &serde_json::Map<String, Value>) -> CursorAccountSnapshot {
     let mut snap = CursorAccountSnapshot {
         membership: first_str(usage, &["membershipType", "membership_type"]),
+        billing_cycle_start: first_str(usage, &["billingCycleStart", "billing_cycle_start"]),
         billing_cycle_end: first_str(usage, &["billingCycleEnd", "billing_cycle_end"]),
         ..CursorAccountSnapshot::default()
     };
@@ -264,6 +268,7 @@ mod tests {
     fn usage_summary_json_maps_plan_fields() {
         let v = serde_json::json!({
             "membershipType": "pro",
+            "billingCycleStart": "2026-08-12T13:47:51.000Z",
             "billingCycleEnd": "2026-09-12T13:47:51.000Z",
             "individualUsage": {
                 "plan": {
@@ -282,6 +287,10 @@ mod tests {
         assert_eq!(snap.auto_percent, Some(0.6));
         // used 2000 + bonus 2716
         assert_eq!(snap.total_used_cents, Some(4716));
+        assert_eq!(
+            snap.billing_cycle_start.as_deref(),
+            Some("2026-08-12T13:47:51.000Z")
+        );
         assert_eq!(
             snap.billing_cycle_end.as_deref(),
             Some("2026-09-12T13:47:51.000Z")

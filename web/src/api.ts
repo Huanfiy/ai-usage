@@ -70,6 +70,8 @@ export type CursorAccountRow = {
   account_hash: string
   account_label: string
   membership?: string | null
+  /** 当前账期起点；旧采集端不上报，缺失时前端按月账期从 billing_cycle_end 反推 */
+  billing_cycle_start?: string | null
   billing_cycle_end?: string | null
   api_percent?: number | null
   auto_percent?: number | null
