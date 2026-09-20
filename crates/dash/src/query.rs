@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Timelike, Utc};
 use rusqlite::{params_from_iter, Connection};
 use serde::Serialize;
 
@@ -44,25 +44,29 @@ impl QueryFilter {
         (self.to - self.from) > Duration::days(2)
     }
 
-    /// Half-open `[from, to)` as UTC calendar days for `daily_rollups`.
-    ///
-    /// A mid-day `to` must include that UTC date: `day < to.date` would drop
-    /// today when the UI 7D window ends at now.
-    fn rollup_day_bounds(&self) -> (String, String) {
-        (
-            self.from.date_naive().to_string(),
-            exclusive_rollup_end(self.to).to_string(),
-        )
+    /// Whole UTC days inside `[from, to)` that `daily_rollups` can answer, as
+    /// half-open `[first, end)`. Whatever is left on either edge (a window
+    /// starting or ending mid-day) is read from `usage_buckets`, so no bucket
+    /// outside the window is ever counted. None when no whole day fits.
+    fn full_rollup_days(&self) -> Option<(NaiveDate, NaiveDate)> {
+        let first = ceil_day(self.from);
+        let end = self.to.date_naive();
+        (first < end).then_some((first, end))
     }
 }
 
-fn exclusive_rollup_end(to: DateTime<Utc>) -> chrono::NaiveDate {
-    let d = to.date_naive();
-    if to.time() == chrono::NaiveTime::MIN {
+/// First UTC midnight at or after `t`, as a date.
+fn ceil_day(t: DateTime<Utc>) -> NaiveDate {
+    let d = t.date_naive();
+    if t.time() == NaiveTime::MIN {
         d
     } else {
         d.succ_opt().unwrap_or(d)
     }
+}
+
+fn day_start(d: NaiveDate) -> DateTime<Utc> {
+    DateTime::from_naive_utc_and_offset(d.and_time(NaiveTime::MIN), Utc)
 }
 
 fn split_csv(v: Option<String>) -> Vec<String> {
@@ -112,28 +116,85 @@ struct TokenRow {
     total: i64,
 }
 
+/// Rows for `[from, to)`. Short windows read `usage_buckets` directly; longer
+/// ones read `daily_rollups` for the whole UTC days in between and fall back to
+/// `usage_buckets` for the partial day at either edge. Edge rows carry their
+/// UTC day as `bucket_start`, like rollup rows, so `series` keeps one point per
+/// day.
 fn scan_rows(conn: &Connection, f: &QueryFilter) -> Result<Vec<TokenRow>> {
-    scan_table(conn, f, f.use_rollups())
+    let Some((first, end)) = f.full_rollup_days().filter(|_| f.use_rollups()) else {
+        return scan_buckets(conn, f, f.from, f.to);
+    };
+    let mut rows = scan_rollups(conn, f, first, end)?;
+    let head_end = day_start(first);
+    if f.from < head_end {
+        let day = f.from.date_naive().to_string();
+        rows.extend(fold_to_day(scan_buckets(conn, f, f.from, head_end)?, &day));
+    }
+    let tail_start = day_start(end);
+    if tail_start < f.to {
+        rows.extend(fold_to_day(
+            scan_buckets(conn, f, tail_start, f.to)?,
+            &end.to_string(),
+        ));
+    }
+    Ok(rows)
 }
 
-fn scan_table(conn: &Connection, f: &QueryFilter, use_rollups: bool) -> Result<Vec<TokenRow>> {
-    let (table, time_col) = if use_rollups {
-        ("daily_rollups", "day")
-    } else {
-        ("usage_buckets", "bucket_start")
-    };
+fn fold_to_day(mut rows: Vec<TokenRow>, day: &str) -> Vec<TokenRow> {
+    for r in &mut rows {
+        r.bucket_start = day.to_string();
+    }
+    rows
+}
+
+fn scan_buckets(
+    conn: &Connection,
+    f: &QueryFilter,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<TokenRow>> {
+    scan_table(
+        conn,
+        f,
+        "usage_buckets",
+        "bucket_start",
+        &from.to_rfc3339(),
+        &to.to_rfc3339(),
+    )
+}
+
+fn scan_rollups(
+    conn: &Connection,
+    f: &QueryFilter,
+    first: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<TokenRow>> {
+    scan_table(
+        conn,
+        f,
+        "daily_rollups",
+        "day",
+        &first.to_string(),
+        &end.to_string(),
+    )
+}
+
+fn scan_table(
+    conn: &Connection,
+    f: &QueryFilter,
+    table: &str,
+    time_col: &str,
+    lo: &str,
+    hi: &str,
+) -> Result<Vec<TokenRow>> {
     let mut sql = format!(
         "SELECT host_id, source, model, project, {time_col},
                 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
                 reasoning_output_tokens, total_tokens
          FROM {table} WHERE {time_col} >= ? AND {time_col} < ?"
     );
-    let mut params: Vec<String> = if use_rollups {
-        let (a, b) = f.rollup_day_bounds();
-        vec![a, b]
-    } else {
-        vec![f.from.to_rfc3339(), f.to.to_rfc3339()]
-    };
+    let mut params: Vec<String> = vec![lo.to_string(), hi.to_string()];
     if let Some(host) = &f.host_id {
         sql.push_str(" AND host_id = ?");
         params.push(host.clone());
@@ -474,7 +535,7 @@ pub struct Activity {
 }
 
 pub fn activity(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Activity> {
-    let rows = scan_table(conn, f, false)?;
+    let rows = scan_buckets(conn, f, f.from, f.to)?;
     let mut cells = vec![(0i64, 0.0f64); 168];
     for r in rows {
         let Ok(dt) = DateTime::parse_from_rfc3339(&r.bucket_start) else {
@@ -638,16 +699,85 @@ mod tests {
     }
 
     #[test]
-    fn rollup_window_ending_mid_day_includes_that_day() {
-        let midnight = Utc.with_ymd_and_hms(2026, 8, 21, 0, 0, 0).unwrap();
-        let mid = Utc.with_ymd_and_hms(2026, 8, 21, 9, 47, 0).unwrap();
-        let from = midnight - Duration::days(7);
-        let open =
-            QueryFilter::from_params(Some(from), Some(midnight), None, None, None, None, false);
-        let live = QueryFilter::from_params(Some(from), Some(mid), None, None, None, None, false);
-        assert!(open.use_rollups() && live.use_rollups());
-        assert_eq!(open.rollup_day_bounds().1, "2026-08-21");
-        assert_eq!(live.rollup_day_bounds().1, "2026-08-22");
+    fn full_rollup_days_exclude_partial_edges() {
+        let q = |from: DateTime<Utc>, to: DateTime<Utc>| {
+            QueryFilter::from_params(Some(from), Some(to), None, None, None, None, false)
+        };
+        let at = |m, d, h, min| Utc.with_ymd_and_hms(2026, m, d, h, min, 0).unwrap();
+        let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        // 整日对齐：全部走日汇总
+        assert_eq!(
+            q(at(8, 14, 0, 0), at(8, 21, 0, 0)).full_rollup_days(),
+            Some((day(8, 14), day(8, 21)))
+        );
+        // UI 7D 窗口终点在当天中途：当天交给小时桶
+        assert_eq!(
+            q(at(8, 14, 0, 0), at(8, 21, 9, 47)).full_rollup_days(),
+            Some((day(8, 14), day(8, 21)))
+        );
+        // 起点在当天中途（如 Cursor 账期起点）：首日交给小时桶
+        assert_eq!(
+            q(at(8, 13, 19, 0), at(8, 21, 9, 47)).full_rollup_days(),
+            Some((day(8, 14), day(8, 21)))
+        );
+        // 超过 2 天但只夹着一个整日
+        let f = q(at(8, 13, 19, 0), at(8, 15, 20, 0));
+        assert!(f.use_rollups());
+        assert_eq!(f.full_rollup_days(), Some((day(8, 14), day(8, 15))));
+    }
+
+    fn bucket_on(day: u32, hour: u32, tokens: i64) -> UsageBucket {
+        let mut b = sample_bucket(hour, tokens, 0, 0, 0);
+        b.bucket_start =
+            round_to_half_hour(Utc.with_ymd_and_hms(2026, 1, day, hour, 17, 0).unwrap());
+        b
+    }
+
+    #[test]
+    fn rollup_window_edges_read_hourly_buckets() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![
+                    bucket_on(13, 5, 1),      // 首日、窗口起点之前：不计
+                    bucket_on(13, 20, 10),    // 首日、起点之后：计
+                    bucket_on(14, 12, 100),   // 整日：走日汇总
+                    bucket_on(16, 3, 1000),   // 尾日、终点之前：计
+                    bucket_on(16, 14, 10000), // 尾日、终点之后：不计
+                ],
+                vec![],
+            );
+            let f = QueryFilter::from_params(
+                Some(Utc.with_ymd_and_hms(2026, 1, 13, 12, 0, 0).unwrap()),
+                Some(Utc.with_ymd_and_hms(2026, 1, 16, 10, 0, 0).unwrap()),
+                None,
+                None,
+                None,
+                None,
+                false,
+            );
+            assert!(f.use_rollups());
+            // 首尾各一条小时桶 + 整日一条汇总；整日不会同时从两张表计入
+            assert_eq!(scan_rows(c, &f)?.len(), 3);
+            assert_eq!(summary(c, &book(), &f)?.tokens.total, 1110);
+            // 边界天的小时桶折叠成日点，趋势序列仍是每天一个点
+            let pts: Vec<(String, i64)> = series(c, &book(), &f)?
+                .into_iter()
+                .map(|p| (p.t, p.tokens))
+                .collect();
+            assert_eq!(
+                pts,
+                vec![
+                    ("2026-01-13".to_string(), 10),
+                    ("2026-01-14".to_string(), 100),
+                    ("2026-01-16".to_string(), 1000),
+                ]
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn window() -> QueryFilter {
