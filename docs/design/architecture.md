@@ -124,12 +124,12 @@ sequenceDiagram
 
 采集端**不上报费用**。历史 token 行不因改价而重写。未知模型计入 token、排除出费用，并以 coverage 给出覆盖比例。这是估算，不是账单。
 
-权威默认源为 LiteLLM 价目表（MIT）：构建期裁成精简快照并嵌入看板，`serve` 不依赖网络。刷新是手动动作，不设自动拉取：设置页「更新价目表」按钮（`POST /v1/pricing/update`）或 `ai-usage-dash pricing update`，从 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` 拉取并写入数据目录缓存。按钮走的是同一条路径，拉完重建价目表并热替换 `serve` 持有的那份，无需重启；同一时刻只允许一次更新在跑。费用按查询时的价目折算，所以刷新后历史数据一并重算。LiteLLM 没有的 Cursor 自有模型（Composer 2.5、Cursor Grok 4.5/4.6 及 Fast 档）用构建期嵌入的官方列表价补缺（`crates/dash/pricing/cursor-models.json`），不随 `pricing update` 刷新，随本仓库版本更新。再可选本地 override，后者覆盖前者。不做运行时爬官方价目页，不依赖 OpenRouter。
+权威默认源为 LiteLLM 价目表（MIT）：构建期裁成精简快照并嵌入看板，`serve` 不依赖网络。快照由 `scripts/update-pricing-snapshot.py` 从 `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` 生成（GitHub raw 不通时回退 jsDelivr 镜像），随代码入库；`./run.sh build musl` 发版前自动刷新（CI 从已提交的快照构建，不刷新），所以发布产物自带当时的价目，看板主机不需要外网。发版间隙的刷新是手动动作，不设自动拉取，两条路径写同一份数据目录缓存：设置页「更新价目表」（`POST /v1/pricing/update`）或 `ai-usage-dash pricing update` 从上游拉取；看板主机不能访问外网时，设置页「导入文件」（`POST /v1/pricing/import`）或 `ai-usage-dash pricing import <file>` 导入在别处下载的价目 JSON，接受 LiteLLM 原始文件和精简快照两种格式。设置页两种方式拉完都重建价目表并热替换 `serve` 持有的那份，无需重启；CLI 写的缓存在下次启动生效；同一时刻只允许一次更新在跑。缓存的 `updated_at` 早于嵌入快照时忽略缓存，发版带来的新快照不会被某次手动刷新留下的老缓存盖住。费用按查询时的价目折算，所以刷新后历史数据一并重算。LiteLLM 没有的 Cursor 自有模型（Composer 2.5、Cursor Grok 4.5/4.6 及 Fast 档）用构建期嵌入的官方列表价补缺（`crates/dash/pricing/cursor-models.json`），不随 `pricing update` 刷新，随本仓库版本更新。再可选本地 override，后者覆盖前者。不做运行时爬官方价目页，不依赖 OpenRouter。
 
 ```mermaid
 flowchart TB
   snap[嵌入快照 · 离线可用] --> merge[查询时价目表]
-  cache[数据目录 pricing.json · 可选刷新] --> merge
+  cache[数据目录 pricing.json · 上游拉取或文件导入] --> merge
   cursor[嵌入 Cursor 自有模型价 · 仅补缺] --> merge
   over[pricing.override.json] --> merge
   tokens[已存 token 行] --> cost[估算 USD]

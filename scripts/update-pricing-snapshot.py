@@ -6,12 +6,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+# 同一文件的镜像，GitHub raw 不稳时依次回退（jsDelivr 对分支引用有最长 12h 缓存）。
+MIRRORS = [
+    URL,
+    "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json",
+]
 OUT = Path(__file__).resolve().parents[1] / "crates/dash/pricing/litellm-snapshot.json"
 
 
+def fetch() -> dict:
+    errors = []
+    for url in MIRRORS:
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                return json.load(resp)
+        except Exception as exc:  # noqa: BLE001 - 任一镜像失败都换下一个
+            errors.append(f"{url}: {exc}")
+    raise SystemExit("拉取上游价目表失败:\n  " + "\n  ".join(errors))
+
+
 def main() -> None:
-    with urllib.request.urlopen(URL, timeout=60) as resp:
-        data = json.load(resp)
+    data = fetch()
     models = {}
     for key, value in data.items():
         if not isinstance(value, dict):

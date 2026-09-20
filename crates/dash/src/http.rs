@@ -72,6 +72,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/joins/{join_id}/deny", post(deny_join))
         .route("/v1/pricing", get(pricing_status))
         .route("/v1/pricing/update", post(update_pricing))
+        .route("/v1/pricing/import", post(import_pricing))
         .route("/v1/tokens", get(list_tokens))
         .route("/v1/tokens/{host_id}", delete(revoke_token))
         .fallback(static_handler)
@@ -620,15 +621,7 @@ async fn update_pricing(
         .await
         .map_err(ApiError::internal)?
         .map_err(|e| ApiError::Bad(format!("拉取上游价目表失败：{e}")))?;
-    let book = PriceBook::load(
-        &st.data_dir,
-        st.pricing_override.as_ref().map(|p| p.as_path()),
-    )
-    .map_err(ApiError::internal)?;
-    {
-        let mut w = st.pricing.write().expect("pricing lock");
-        *w = book;
-    }
+    reload_price_book(&st)?;
     drop(guard);
     let mut out = price_book_status(&st);
     out["ok"] = json!(true);
@@ -636,12 +629,50 @@ async fn update_pricing(
     Ok(Json(out))
 }
 
+/// Takes a price table uploaded by the operator (raw LiteLLM JSON or the
+/// condensed snapshot) for a dash host that cannot reach upstream itself.
+/// Same cache file and hot swap as `update_pricing`.
+async fn import_pricing(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    require_ui(&st, &headers)?;
+    let guard = BusyGuard::acquire(&st.pricing_busy)
+        .ok_or_else(|| ApiError::Bad("价目表正在更新，请稍候".into()))?;
+    let raw = decode_body(&headers, &body).map_err(ApiError::Bad)?;
+    let data_dir = st.data_dir.clone();
+    let imported =
+        tokio::task::spawn_blocking(move || crate::pricing::import_and_store(&data_dir, &raw))
+            .await
+            .map_err(ApiError::internal)?
+            .map_err(|e| ApiError::Bad(format!("导入价目表失败：{e}")))?;
+    reload_price_book(&st)?;
+    drop(guard);
+    let mut out = price_book_status(&st);
+    out["ok"] = json!(true);
+    out["imported"] = json!(imported);
+    Ok(Json(out))
+}
+
+/// Rebuilds the book from snapshot + cache + override and swaps it in.
+fn reload_price_book(st: &AppState) -> Result<(), ApiError> {
+    let book = PriceBook::load(
+        &st.data_dir,
+        st.pricing_override.as_ref().map(|p| p.as_path()),
+    )
+    .map_err(ApiError::internal)?;
+    let mut w = st.pricing.write().expect("pricing lock");
+    *w = book;
+    Ok(())
+}
+
 fn price_book_status(st: &AppState) -> Value {
     let book = st.pricing.read().expect("pricing lock");
     json!({
         "updated_at": book.updated_at,
         "models": book.model_count(),
-        "cached": st.data_dir.join("pricing.json").is_file(),
+        "cached": book.cache_applied,
         "updating": st.pricing_busy.load(Ordering::SeqCst),
     })
 }
@@ -874,6 +905,21 @@ mod tests {
         let (status, body) = post_json(router(state), "/v1/pricing/update", json!({})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body["error"].as_str().unwrap().contains("正在更新"));
+    }
+
+    #[tokio::test]
+    async fn pricing_import_accepts_uploaded_table() {
+        let (app, _dir) = app();
+        let table = json!({
+            "test-import-model": {"input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6}
+        });
+        let (status, body) = post_json(app.clone(), "/v1/pricing/import", table).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["imported"], 1);
+        assert_eq!(body["cached"], json!(true));
+        let (status, body) = post_json(app, "/v1/pricing/import", json!({"foo": 1})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("导入价目表失败"));
     }
 
     #[tokio::test]

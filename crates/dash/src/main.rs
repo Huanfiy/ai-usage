@@ -65,7 +65,10 @@ enum TokenCmd {
 
 #[derive(Subcommand)]
 enum PricingCmd {
+    /// 从上游 LiteLLM 拉取价目表，缓存到数据目录
     Update,
+    /// 导入本地价目文件（LiteLLM 原始 JSON 或精简快照；`-` 读 stdin），供看板主机不能访问外网时使用
+    Import { file: PathBuf },
 }
 
 #[tokio::main]
@@ -149,6 +152,21 @@ async fn run() -> Result<()> {
                 let n = pricing::fetch_and_store(&data_dir)?;
                 println!(
                     "已更新 {n} 条模型报价 → {}",
+                    data_dir.join("pricing.json").display()
+                );
+            }
+            PricingCmd::Import { file } => {
+                let raw = if file.as_os_str() == "-" {
+                    let mut buf = Vec::new();
+                    std::io::Read::read_to_end(&mut std::io::stdin(), &mut buf)?;
+                    buf
+                } else {
+                    std::fs::read(&file)
+                        .map_err(|e| anyhow::anyhow!("读取 {}: {e}", file.display()))?
+                };
+                let n = pricing::import_and_store(&data_dir, &raw)?;
+                println!(
+                    "已导入 {n} 条模型报价 → {}（看板已在运行的话，重启或用设置页导入才生效）",
                     data_dir.join("pricing.json").display()
                 );
             }

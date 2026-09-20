@@ -167,6 +167,16 @@ export const api = {
     if (!r.ok) throw new Error(body.error || `/v1/pricing/update ${r.status}`)
     return body as PricingStatus & { fetched: number }
   },
+  importPricing: async (text: string) => {
+    const r = await fetch('/v1/pricing/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: text,
+    })
+    const body = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(body.error || `/v1/pricing/import ${r.status}`)
+    return body as PricingStatus & { imported: number }
+  },
   tokens: () =>
     get<{
       items: Array<{

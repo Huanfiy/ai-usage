@@ -10,6 +10,7 @@ AGENT_PANEL_DEFAULT="127.0.0.1:3848"
 AGENT_SERVICE="ai-usage-agent.service"
 VITE_URL="http://127.0.0.1:5173"
 MUSL_TARGET="x86_64-unknown-linux-musl"
+PRICING_SNAPSHOT="crates/dash/pricing/litellm-snapshot.json"
 
 log() { printf '==> %s\n' "$*"; }
 err() { printf 'run.sh: %s\n' "$*" >&2; }
@@ -34,6 +35,7 @@ usage() {
   panel                打开采集端本机面板（默认 http://127.0.0.1:3848）
   dash  [release] [...] 转发给 ai-usage-dash
   test  [...]          cargo test --workspace；其余参数原样转发
+  pricing              刷新内置价目快照（发版前；build musl 会自动做，CI 跳过）
   clean [all]          清理构建产物；all 含 node_modules
 
 示例:
@@ -45,6 +47,7 @@ usage() {
   ./run.sh agent init --url http://127.0.0.1:3847
   ./run.sh agent reload
   ./run.sh panel
+  ./run.sh pricing
   ./run.sh clean
 EOF
 }
@@ -232,6 +235,16 @@ cmd_build() {
   if [[ $# -gt 1 ]]; then
     die "未知参数: $*（可用: release | musl）"
   fi
+  # 发布构建先刷新价目快照；失败沿用仓库内的现有快照。CI 从已提交的快照构建，不刷新。
+  if [[ "$profile" == musl && -z "${CI:-}" ]]; then
+    if refresh_pricing_snapshot; then
+      if snapshot_changed; then
+        log "价目快照已更新，发版前记得提交 $PRICING_SNAPSHOT"
+      fi
+    else
+      err "价目快照刷新失败，沿用仓库内的现有快照"
+    fi
+  fi
   web_build
   cargo_bins "$profile" ai-usage-dash ai-usage-agent
   if [[ "$profile" == musl ]]; then
@@ -239,6 +252,33 @@ cmd_build() {
     assert_static "$(bin_path ai-usage-agent musl)"
   fi
   log "完成 → $(bin_path ai-usage-dash "$profile")"
+}
+
+# 内置价目快照随代码入库，发版前在能上网的机器上刷新；看板运行不依赖外网。
+refresh_pricing_snapshot() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "未找到命令: python3，无法刷新价目快照"
+    return 1
+  fi
+  log "刷新内置价目快照（LiteLLM）"
+  python3 "$ROOT/scripts/update-pricing-snapshot.py"
+}
+
+snapshot_changed() {
+  ! git -C "$ROOT" diff --quiet -- "$PRICING_SNAPSHOT"
+}
+
+cmd_pricing() {
+  if [[ $# -gt 0 ]]; then
+    die "pricing 不接受参数"
+  fi
+  refresh_pricing_snapshot
+  if snapshot_changed; then
+    git -C "$ROOT" --no-pager diff --stat -- "$PRICING_SNAPSHOT"
+    log "快照已更新，随下次提交入库"
+  else
+    log "快照无变化"
+  fi
 }
 
 cmd_run() {
@@ -476,6 +516,7 @@ main() {
     panel) cmd_agent_panel "$@" ;;
     dash) cmd_dash "$@" ;;
     test) cmd_test "$@" ;;
+    pricing) cmd_pricing "$@" ;;
     clean) cmd_clean "$@" ;;
     *)
       err "未知命令: $cmd"

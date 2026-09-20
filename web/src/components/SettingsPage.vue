@@ -69,6 +69,33 @@ async function updatePricing() {
   }
 }
 
+// 看板主机不能访问外网时，把在别处下载的价目 JSON 传上来，走 /v1/pricing/import
+const fileInput = ref<HTMLInputElement | null>(null)
+
+function pickPricingFile() {
+  fileInput.value?.click()
+}
+
+async function importPricingFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  pricingBusy.value = true
+  pricingMsg.value = ''
+  err.value = ''
+  try {
+    const r = await api.importPricing(await file.text())
+    pricing.value = r
+    pricingMsg.value = `已从 ${file.name} 导入 ${r.imported} 条模型报价，费用已按新价目重算`
+    emit('changed')
+  } catch (e) {
+    err.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    pricingBusy.value = false
+  }
+}
+
 onMounted(() => {
   void load()
 })
@@ -163,12 +190,23 @@ async function remove(hostId: string) {
             </template>
             <template v-else>读取中…</template>
             <br />
-            费用在查询时按价目折算，刷新后历史数据一并重算。新模型需上游 LiteLLM 已收录。
+            费用在查询时按价目折算，刷新后历史数据一并重算。新模型需上游 LiteLLM
+            已收录；看板主机不能访问外网时，在别处下载价目 JSON 后用「导入文件」上传。
           </p>
         </div>
-        <button type="button" class="chip" :disabled="priceBusy" @click="updatePricing">
-          {{ priceBusy ? '更新中…' : '更新价目表' }}
-        </button>
+        <div style="display: flex; gap: 6px; flex-shrink: 0">
+          <button type="button" class="chip" :disabled="priceBusy" @click="updatePricing">
+            {{ priceBusy ? '更新中…' : '更新价目表' }}
+          </button>
+          <button
+            type="button"
+            class="chip"
+            :disabled="priceBusy"
+            title="上传 LiteLLM 原始价目 JSON，或 scripts/update-pricing-snapshot.py 生成的精简快照"
+            @click="pickPricingFile"
+          >导入文件…</button>
+          <input ref="fileInput" type="file" accept=".json,application/json" hidden @change="importPricingFile" />
+        </div>
       </div>
       <p v-if="pricingMsg" class="switch-hint" style="margin-bottom: 0">{{ pricingMsg }}</p>
     </section>

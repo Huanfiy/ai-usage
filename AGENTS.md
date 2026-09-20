@@ -49,6 +49,7 @@ tmp/               本地产物，不入库
 | `./run.sh agent reload` | 编采集端、装入 user service 并重启 |
 | `./run.sh panel` | 打开采集端本机面板 |
 | `./run.sh dash …` | 看板 CLI |
+| `./run.sh pricing` | 刷新内置价目快照（`build musl` 前自动执行，CI 跳过） |
 
 ## 索引
 
