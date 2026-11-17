@@ -6,7 +6,7 @@ import {
   type BreakdownItem,
   type Distributions,
   type HostRow,
-  type SeriesPoint,
+  type UsageSeries,
   type SessionRow,
   type Summary,
 } from './api'
@@ -53,7 +53,7 @@ const loading = ref(false)
 const applied = ref<AppliedRange>(loadStoredRange())
 
 const summary = ref<Summary | null>(null)
-const points = ref<SeriesPoint[]>([])
+const trend = ref<UsageSeries | null>(null)
 const distributions = ref<Distributions>({ host: [], source: [], model: [], project: [] })
 const activity = ref<ActivityCell[]>([])
 const sessions = ref<SessionRow[]>([])
@@ -65,6 +65,10 @@ const options = ref<{ sources: string[]; models: string[]; projects: string[] }>
 })
 
 const rangeLabel = computed(() => presetLabel(applied.value.preset, applied.value.from, applied.value.to))
+// Polling must not reset a zoomed chart; only explicit range/filter changes do.
+const trendViewKey = computed(() => JSON.stringify([
+  applied.value, host.value, source.value, model.value, project.value, hideProjects.value,
+]))
 
 const query = computed(() => {
   const range = liveRange(applied.value)
@@ -115,7 +119,7 @@ async function refresh(opts?: { silent?: boolean }) {
     ])
     if (my !== refreshSeq) return
     summary.value = s
-    points.value = ser.points ?? []
+    trend.value = ser
     distributions.value = {
       host: asList(dist.host),
       source: asList(dist.source),
@@ -255,7 +259,7 @@ function hostLabel(hostId: string, hostname: string): string {
 
       <KpiRow v-if="summary" :summary="summary" :loading="loading" />
       <section class="grid">
-        <TrendChart :points="points" :range-label="rangeLabel" />
+        <TrendChart :series="trend" :range-label="rangeLabel" :reset-key="trendViewKey" />
         <Heatmap :cells="activity" />
       </section>
       <section class="donuts">

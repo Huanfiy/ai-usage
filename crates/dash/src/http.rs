@@ -183,7 +183,7 @@ async fn series(
         .db
         .with(|c| query::series(c, &book, &f))
         .map_err(ApiError::internal)?;
-    Ok(Json(json!({ "points": out })))
+    Ok(Json(serde_json::to_value(out).unwrap()))
 }
 
 async fn breakdown(
@@ -931,6 +931,25 @@ mod tests {
         assert!(body["source"].is_array());
         assert!(body["model"].is_array());
         assert!(body["project"].is_array());
+    }
+
+    #[tokio::test]
+    async fn series_route_reports_grid_and_fills_empty_bins() {
+        let (app, _dir) = app();
+        let (status, body) = get_json(
+            app,
+            "/v1/series?from=2026-01-01T00:00:00Z&to=2026-01-31T00:00:00Z",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["from"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(body["to"], "2026-01-31T00:00:00+00:00");
+        assert_eq!(body["interval_seconds"], 3600);
+        let points = body["points"].as_array().unwrap();
+        assert_eq!(points.len(), 720);
+        assert!(points
+            .iter()
+            .all(|p| p["tokens"] == 0 && p["cost_usd"] == 0.0));
     }
 
     #[tokio::test]

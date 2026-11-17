@@ -33,6 +33,13 @@ export type SeriesPoint = {
   cache_creation: number
 }
 
+export type UsageSeries = {
+  from: string
+  to: string
+  interval_seconds: number
+  points: SeriesPoint[]
+}
+
 export type ModelPrice = {
   input: number
   output: number
@@ -139,7 +146,7 @@ async function get<T>(path: string): Promise<T> {
 export const api = {
   health: () => get<{ ok: boolean; version: string }>('/v1/health'),
   summary: (q: Query) => get<Summary>('/v1/summary' + qs(q)),
-  series: (q: Query) => get<{ points: SeriesPoint[] }>('/v1/series' + qs(q)),
+  series: (q: Query) => get<UsageSeries>('/v1/series' + qs(q)),
   breakdown: (q: Query, by: string) => get<{ items: BreakdownItem[] }>('/v1/breakdown' + qs({ ...q, by })),
   distributions: (q: Query) => get<Distributions>('/v1/distributions' + qs(q)),
   activity: (q: Query) => get<Activity>('/v1/activity' + qs(q)),

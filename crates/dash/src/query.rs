@@ -119,8 +119,8 @@ struct TokenRow {
 /// Rows for `[from, to)`. Short windows read `usage_buckets` directly; longer
 /// ones read `daily_rollups` for the whole UTC days in between and fall back to
 /// `usage_buckets` for the partial day at either edge. Edge rows carry their
-/// UTC day as `bucket_start`, like rollup rows, so `series` keeps one point per
-/// day.
+/// UTC day as `bucket_start`, like rollup rows. Sub-day trends query buckets
+/// separately so this summary optimization does not discard their detail.
 fn scan_rows(conn: &Connection, f: &QueryFilter) -> Result<Vec<TokenRow>> {
     let Some((first, end)) = f.full_rollup_days().filter(|_| f.use_rollups()) else {
         return scan_buckets(conn, f, f.from, f.to);
@@ -372,33 +372,89 @@ pub struct SeriesPoint {
     pub cost_usd: f64,
 }
 
-pub fn series(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Vec<SeriesPoint>> {
-    let rows = scan_rows(conn, f)?;
-    let mut map: std::collections::BTreeMap<String, SeriesPoint> =
-        std::collections::BTreeMap::new();
-    for r in rows {
-        let cost = book
-            .cost_usd(&r.billed_model, token_slice(&r))
-            .unwrap_or(0.0);
-        let e = map
-            .entry(r.bucket_start.clone())
-            .or_insert_with(|| SeriesPoint {
-                t: r.bucket_start.clone(),
+const SERIES_MAX_POINTS: usize = 1024;
+const BUCKET_SECONDS: i64 = 30 * 60;
+
+#[derive(Serialize)]
+pub struct Series {
+    pub from: String,
+    pub to: String,
+    pub interval_seconds: i64,
+    pub points: Vec<SeriesPoint>,
+}
+
+/// Choose the finest supported clock-aligned interval that fits the entire
+/// window, including empty and partial edge bins. Never go finer than ingest.
+fn series_grid(f: &QueryFilter) -> (i64, i64, usize) {
+    if f.to <= f.from {
+        return (BUCKET_SECONDS, f.from.timestamp(), 0);
+    }
+    let mut step = BUCKET_SECONDS;
+    let last = (f.to - Duration::nanoseconds(1)).timestamp();
+    loop {
+        let first_bin = f.from.timestamp().div_euclid(step);
+        let count = last.div_euclid(step) - first_bin + 1;
+        if count <= SERIES_MAX_POINTS as i64 {
+            return (step, first_bin * step, count as usize);
+        }
+        step = match step {
+            1800 => 3600,
+            3600 => 7200,
+            7200 => 10800,
+            10800 => 21600,
+            // Beyond 12h, use whole UTC days so rollups remain usable.
+            _ => step * 2,
+        };
+    }
+}
+
+pub fn series(conn: &Connection, book: &PriceBook, f: &QueryFilter) -> Result<Series> {
+    let (step, first, count) = series_grid(f);
+    let mut out = Series {
+        from: f.from.to_rfc3339(),
+        to: f.to.to_rfc3339(),
+        interval_seconds: step,
+        points: (0..count)
+            .map(|i| SeriesPoint {
+                t: DateTime::from_timestamp(first + i as i64 * step, 0)
+                    .unwrap_or(f.from)
+                    .to_rfc3339(),
                 tokens: 0,
                 input: 0,
                 output: 0,
                 cache_read: 0,
                 cache_creation: 0,
                 cost_usd: 0.0,
-            });
+            })
+            .collect(),
+    };
+    if count == 0 {
+        return Ok(out);
+    }
+    let rows = if step >= 86400 {
+        scan_rows(conn, f)?
+    } else {
+        scan_buckets(conn, f, f.from, f.to)?
+    };
+    for r in rows {
+        let time = if step >= 86400 {
+            day_start(NaiveDate::parse_from_str(&r.bucket_start, "%Y-%m-%d")?)
+        } else {
+            DateTime::parse_from_rfc3339(&r.bucket_start)?.with_timezone(&Utc)
+        };
+        let index = (time.timestamp().div_euclid(step) - first.div_euclid(step)) as usize;
+        let e = &mut out.points[index];
         e.tokens += r.total;
         e.input += r.input;
         e.output += r.output;
         e.cache_read += r.cache_read;
         e.cache_creation += r.cache_write;
-        e.cost_usd += cost;
+        e.cost_usd += book
+            .cost_usd(&r.billed_model, token_slice(&r))
+            .unwrap_or(0.0);
     }
-    Ok(map.into_values().collect())
+    // Empty bins mean no received usage, not evidence of collector uptime.
+    Ok(out)
 }
 
 #[derive(Serialize)]
@@ -762,17 +818,22 @@ mod tests {
             // 首尾各一条小时桶 + 整日一条汇总；整日不会同时从两张表计入
             assert_eq!(scan_rows(c, &f)?.len(), 3);
             assert_eq!(summary(c, &book(), &f)?.tokens.total, 1110);
-            // 边界天的小时桶折叠成日点，趋势序列仍是每天一个点
-            let pts: Vec<(String, i64)> = series(c, &book(), &f)?
+            // 趋势不再复用日汇总：保留窗口内半小时明细，空档补零。
+            let trend = series(c, &book(), &f)?;
+            assert_eq!(trend.interval_seconds, 1800);
+            assert_eq!(trend.points.len(), 140);
+            let pts: Vec<(String, i64)> = trend
+                .points
                 .into_iter()
+                .filter(|p| p.tokens != 0)
                 .map(|p| (p.t, p.tokens))
                 .collect();
             assert_eq!(
                 pts,
                 vec![
-                    ("2026-01-13".to_string(), 10),
-                    ("2026-01-14".to_string(), 100),
-                    ("2026-01-16".to_string(), 1000),
+                    ("2026-01-13T20:00:00+00:00".to_string(), 10),
+                    ("2026-01-14T12:00:00+00:00".to_string(), 100),
+                    ("2026-01-16T03:00:00+00:00".to_string(), 1000),
                 ]
             );
             Ok(())
@@ -930,14 +991,198 @@ mod tests {
         let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
         db.with(|c| {
             seed(c, vec![sample_bucket(10, 100, 20, 30, 10)], vec![]);
-            let points = series(c, &book(), &window())?;
-            assert_eq!(points.len(), 1);
-            let p = &points[0];
+            let trend = series(c, &book(), &window())?;
+            assert_eq!(trend.points.len(), 96);
+            let p = trend.points.iter().find(|p| p.tokens != 0).unwrap();
             assert_eq!(p.input, 100);
             assert_eq!(p.output, 20);
             assert_eq!(p.cache_read, 30);
             assert_eq!(p.cache_creation, 10);
             assert_eq!(p.tokens, 160);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn series_grid_preserves_detail_up_to_1024_points() {
+        let start = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for (days, step, count) in [
+            (1, 1800, 48),
+            (7, 1800, 336),
+            (30, 3600, 720),
+            (90, 10800, 720),
+        ] {
+            let mut f = window();
+            f.from = start;
+            f.to = start + Duration::days(days);
+            assert_eq!(
+                series_grid(&f),
+                (step, start.timestamp().div_euclid(step) * step, count)
+            );
+        }
+        let mut f = window();
+        f.from = start;
+        f.to = start + Duration::seconds(1800 * 1024);
+        assert_eq!(series_grid(&f).2, 1024);
+        // Count partial edge bins as well, including sub-second boundaries.
+        f.from += Duration::nanoseconds(1);
+        f.to += Duration::nanoseconds(1);
+        assert_eq!(series_grid(&f).0, 3600);
+        assert_eq!(series_grid(&f).2, 513);
+        f.to = f.from;
+        assert_eq!(series_grid(&f).2, 0);
+        f.to -= Duration::seconds(1);
+        assert_eq!(series_grid(&f).2, 0);
+    }
+
+    #[test]
+    fn series_grid_is_aligned_and_bounded_for_custom_windows() {
+        for year in [1960, 2026] {
+            for days in [1, 7, 21, 22, 30, 90, 365, 1024, 3650, 36500] {
+                for minutes in [0, 1, 29, 30, 59, 181] {
+                    let mut f = window();
+                    f.from = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap()
+                        + Duration::minutes(minutes);
+                    f.to = f.from + Duration::days(days) + Duration::nanoseconds(1);
+                    let (step, first, count) = series_grid(&f);
+                    assert!(count > 0 && count <= SERIES_MAX_POINTS);
+                    assert_eq!(step % BUCKET_SECONDS, 0);
+                    assert_eq!(first.rem_euclid(step), 0);
+                    assert!(first <= f.from.timestamp());
+                    assert!(first + step > f.from.timestamp());
+                    assert!(first + count as i64 * step > f.to.timestamp());
+                    assert!(first + (count as i64 - 1) * step <= f.to.timestamp());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn series_fills_leading_internal_and_trailing_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            seed(
+                c,
+                vec![
+                    sample_bucket(10, 100, 0, 0, 0),
+                    sample_bucket(15, 50, 0, 0, 0),
+                ],
+                vec![],
+            );
+            let trend = series(c, &book(), &window())?;
+            assert_eq!(trend.points.len(), 96);
+            assert_eq!(trend.points.first().unwrap().tokens, 0);
+            assert_eq!(trend.points.last().unwrap().tokens, 0);
+            assert_eq!(trend.points.iter().filter(|p| p.tokens == 0).count(), 94);
+            for pair in trend.points.windows(2) {
+                let a = DateTime::parse_from_rfc3339(&pair[0].t)?;
+                let b = DateTime::parse_from_rfc3339(&pair[1].t)?;
+                assert_eq!((b - a).num_seconds(), 1800);
+            }
+            let mut f = window();
+            f.host_id = Some("no-such-host".into());
+            let empty = series(c, &book(), &f)?;
+            assert_eq!(empty.points.len(), 96);
+            assert!(empty
+                .points
+                .iter()
+                .all(|p| p.tokens == 0 && p.cost_usd == 0.0));
+            f.to = f.from;
+            assert!(series(c, &book(), &f)?.points.is_empty());
+            f.to = f.from + Duration::seconds(1);
+            assert_eq!(series(c, &book(), &f)?.points.len(), 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn series_aggregation_preserves_totals_pricing_filters_and_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("t.sqlite")).unwrap();
+        db.with(|c| {
+            let first = sample_bucket(10, 100, 20, 30, 10);
+            let mut second = first.clone();
+            second.bucket_start += Duration::minutes(30);
+            second.reasoning_output_tokens = 5;
+            let mut other_project = first.clone();
+            other_project.project = "other".into();
+            let mut other_source = first.clone();
+            other_source.source = "pi".into();
+            let mut unknown_model = first.clone();
+            unknown_model.model = "unknown-model".into();
+            seed(
+                c,
+                vec![
+                    first.clone(),
+                    second,
+                    other_project,
+                    other_source,
+                    unknown_model,
+                ],
+                vec![],
+            );
+            let mut f = window();
+            f.from = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+            f.to = f.from + Duration::days(30);
+            f.host_id = Some("host1".into());
+            f.sources = vec!["codex".into()];
+            f.models = vec!["gpt-5.4".into()];
+            f.projects = vec!["demo".into()];
+            let prices = book();
+            let trend = series(c, &prices, &f)?;
+            assert_eq!(trend.interval_seconds, 3600);
+            let nonzero: Vec<_> = trend.points.iter().filter(|p| p.tokens != 0).collect();
+            assert_eq!(nonzero.len(), 1);
+            let p = nonzero[0];
+            assert_eq!(p.t, first.bucket_start.to_rfc3339());
+            assert_eq!(
+                (p.input, p.output, p.cache_read, p.cache_creation, p.tokens),
+                (200, 40, 60, 20, 325)
+            );
+            // Unknown models remain in tokens but not cost; hidden projects ignore the filter.
+            for hide_projects in [false, true] {
+                f.hide_projects = hide_projects;
+                f.models.clear();
+                for days in [30, 90, 800, 2000] {
+                    f.to = f.from + Duration::days(days);
+                    let trend = series(c, &prices, &f)?;
+                    let total = summary(c, &prices, &f)?;
+                    assert_eq!(
+                        trend.points.iter().map(|p| p.tokens).sum::<i64>(),
+                        total.tokens.total
+                    );
+                    assert!(
+                        (trend.points.iter().map(|p| p.cost_usd).sum::<f64>() - total.cost_usd)
+                            .abs()
+                            < 1e-9
+                    );
+                }
+            }
+            // A partial first day in a long rollup-based series must exclude earlier buckets.
+            f.hide_projects = false;
+            f.models = vec!["gpt-5.4".into()];
+            f.from = first.bucket_start + Duration::minutes(15);
+            f.to = f.from + Duration::days(800);
+            let trend = series(c, &prices, &f)?;
+            assert!(trend.interval_seconds >= 86400);
+            assert_eq!(trend.points.iter().map(|p| p.tokens).sum::<i64>(), 165);
+            // The same half-open edge semantics apply to hourly series.
+            f.to = f.from + Duration::days(30);
+            let trend = series(c, &prices, &f)?;
+            assert_eq!(trend.points.iter().map(|p| p.tokens).sum::<i64>(), 165);
+            f.to = first.bucket_start + Duration::minutes(30);
+            f.from = f.to - Duration::days(30);
+            assert_eq!(
+                series(c, &prices, &f)?
+                    .points
+                    .iter()
+                    .map(|p| p.tokens)
+                    .sum::<i64>(),
+                160
+            );
             Ok(())
         })
         .unwrap();

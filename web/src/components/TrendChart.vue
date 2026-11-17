@@ -1,180 +1,237 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { SeriesPoint } from '../api'
+import { computed, ref, useId, watch } from 'vue'
+import type { UsageSeries } from '../api'
 import { fmtAxisTokens, fmtInt, fmtTime, fmtTimeTick, fmtUsd } from '../format'
+import {
+  binWindow, fitTimeWindow, intervalLabel, panTimeWindow, smoothLine, tooltipPosition,
+  timeX, visibleCurveMax, wheelZoomFactor, zoomTimeWindow, type ChartPoint, type TimeWindow,
+} from '../trend'
 
-const props = defineProps<{ points: SeriesPoint[]; rangeLabel?: string }>()
+const props = defineProps<{ series: UsageSeries | null; rangeLabel?: string; resetKey?: string }>()
 
-const COL = {
-  input: '#3b82f6',
-  output: '#22c55e',
-  cacheCreation: '#f97316',
-  cacheRead: '#a855f7',
-  cost: '#f43f5e',
-}
+const COL = { tokens: '#3ee0b3', cost: '#f43f5e' }
+const chartId = `trend-${useId()}`
+const svgRef = ref<SVGSVGElement | null>(null)
+const bodyRef = ref<HTMLDivElement | null>(null)
+const tooltipRef = ref<HTMLDivElement | null>(null)
+const bodySize = ref({ width: 0, height: 0 })
+const tooltipSize = ref({ width: 248, height: 88 })
+const hoverTime = ref<number | null>(null)
+const pointer = ref<ChartPoint | null>(null)
+const zoomWindow = ref<TimeWindow | null>(null)
+const drag = ref<{ pointerId: number; x: number; window: TimeWindow } | null>(null)
+const resolution = computed(() => props.series ? intervalLabel(props.series.interval_seconds) : '')
 
-const SERIES = [
-  { key: 'input' as const, name: '输入 Tokens', color: COL.input, fill: 'url(#trendIn)' },
-  { key: 'output' as const, name: '输出 Tokens', color: COL.output, fill: 'url(#trendOut)' },
-  { key: 'cacheCreation' as const, name: '缓存创建', color: COL.cacheCreation, fill: 'url(#trendCc)' },
-  { key: 'cacheRead' as const, name: '缓存命中', color: COL.cacheRead, fill: 'url(#trendCr)' },
-]
-
-type Row = {
-  t: string
-  input: number
-  output: number
-  cacheCreation: number
-  cacheRead: number
-  cost: number
-  x: number
-  yInTop: number
-  yOutTop: number
-  yCcTop: number
-  yCrTop: number
-  yInBot: number
-  yOutBot: number
-  yCcBot: number
-  yCrBot: number
-  yCost: number
-}
-
-const hover = ref(-1)
-const tipPos = ref({ x: 0, y: 0 })
-
-const W = 860
-const H = 220
+// Match the SVG coordinate system to its actual size, avoiding letterboxed space.
+const W = computed(() => bodySize.value.width || 860)
+const H = computed(() => bodySize.value.height || 220)
 const padL = 48
-const padR = 48
-const padT = 12
-const padB = 28
+const padR = 16
+const padT = 16
+const padB = 30
+const innerW = computed(() => Math.max(1, W.value - padL - padR))
+const innerH = computed(() => Math.max(1, H.value - padT - padB))
+const yBase = computed(() => H.value - padB)
 
-function bandPath(rows: Row[], top: (r: Row) => number, bot: (r: Row) => number): string {
-  if (!rows.length) return ''
-  let d = `M${rows[0].x},${top(rows[0])}`
-  for (let i = 1; i < rows.length; i++) d += ` L${rows[i].x},${top(rows[i])}`
-  for (let i = rows.length - 1; i >= 0; i--) d += ` L${rows[i].x},${bot(rows[i])}`
-  return d + ' Z'
-}
+const fullRange = computed<TimeWindow | null>(() => {
+  if (!props.series?.points.length) return null
+  const from = new Date(props.series.from).getTime()
+  const to = new Date(props.series.to).getTime()
+  return Number.isFinite(from) && Number.isFinite(to) && to > from ? { from, to } : null
+})
+// Keep at least four real bins on screen; zoom does not invent finer samples.
+const minSpan = computed(() => (props.series?.interval_seconds ?? 1800) * 1000 * 4)
+const viewport = computed(() => fullRange.value && (zoomWindow.value ?? fullRange.value))
+const isZoomed = computed(() => zoomWindow.value !== null)
 
 const view = computed(() => {
-  const pts = props.points
-  const n = pts.length
-  if (!n) return null
-  const innerW = W - padL - padR
-  const innerH = H - padT - padB
-  const rows0 = pts.map((p) => ({
+  const series = props.series
+  const full = fullRange.value
+  const win = viewport.value
+  if (!series || !full || !win) return null
+  const rows0 = series.points.map((p) => ({
     t: p.t,
-    input: Number(p.input) || 0,
-    output: Number(p.output) || 0,
-    cacheCreation: Number(p.cache_creation) || 0,
-    cacheRead: Number(p.cache_read) || 0,
+    time: new Date(p.t).getTime(),
+    // Use the backend total, including cache and reasoning, just like the KPI.
+    tokens: Number(p.tokens) || 0,
     cost: Number(p.cost_usd) || 0,
   }))
-  const tokMax = Math.max(
-    1,
-    ...rows0.map((r) => r.input + r.output + r.cacheCreation + r.cacheRead),
-  )
-  const costMax = Math.max(0.0001, ...rows0.map((r) => r.cost))
-  const yTok = tokMax * 1.08
-  const yCostMax = costMax * 1.08
-  const xAt = (i: number) => (n === 1 ? padL + innerW / 2 : padL + (i / (n - 1)) * innerW)
-  const yTokAt = (v: number) => padT + innerH - (v / yTok) * innerH
-  const yCostAt = (v: number) => padT + innerH - (v / yCostMax) * innerH
-  const yBase = padT + innerH
-  const rows: Row[] = rows0.map((r, i) => {
-    const inTop = r.input
-    const outTop = inTop + r.output
-    const ccTop = outTop + r.cacheCreation
-    const crTop = ccTop + r.cacheRead
-    return {
-      ...r,
-      x: xAt(i),
-      yInBot: yBase,
-      yInTop: yTokAt(inTop),
-      yOutBot: yTokAt(inTop),
-      yOutTop: yTokAt(outTop),
-      yCcBot: yTokAt(outTop),
-      yCcTop: yTokAt(ccTop),
-      yCrBot: yTokAt(ccTop),
-      yCrTop: yTokAt(crTop),
-      yCost: yCostAt(r.cost),
-    }
+  // Fit the Token axis to the visible curve, including intersections at zoom edges.
+  const tokenMax = visibleCurveMax(rows0.map((r) => ({ x: Math.max(r.time, full.from), y: r.tokens })), win.from, win.to)
+  const yTok = Math.max(1, tokenMax) * 1.08
+  const rows = rows0.map((r) => ({
+    ...r,
+    // Clip the original partial bin to the query, but not to the zoom viewport.
+    x: timeX(Math.max(r.time, full.from), win.from, win.to, padL, innerW.value, false),
+    yTokens: yBase.value - r.tokens / yTok * innerH.value,
+  }))
+  const grid = Array.from({ length: 5 }, (_, i) => ({
+    y: yBase.value - innerH.value * i / 4, tok: yTok * i / 4,
+  }))
+  const span = win.to - win.from
+  const tickSpacing = span <= 36 * 3600 * 1000 ? 100 : 64
+  const tickCount = Math.max(2, Math.min(6, Math.floor(innerW.value / tickSpacing) + 1, Math.ceil(span / (series.interval_seconds * 1000)) + 1))
+  const axisTicks = Array.from({ length: tickCount }, (_, i) => {
+    const t = win.from + i / (tickCount - 1) * span
+    return { t: new Date(t).toISOString(), x: timeX(t, win.from, win.to, padL, innerW.value) }
   })
-  const line = (ys: (r: Row) => number) =>
-    rows.map((r, i) => `${i ? 'L' : 'M'}${r.x},${ys(r)}`).join(' ')
-  const gridN = 4
-  const grid = Array.from({ length: gridN + 1 }, (_, i) => {
-    const t = i / gridN
-    const y = padT + innerH * (1 - t)
-    return {
-      y,
-      tok: yTok * t,
-      cost: yCostMax * t,
-    }
-  })
-  const tickIdx = ticks(n)
-  const span = new Date(pts[n - 1].t).getTime() - new Date(pts[0].t).getTime()
   return {
-    rows,
-    yBase,
-    yTok,
-    yCostMax,
-    innerH,
-    grid,
-    tickIdx,
-    span,
-    areaIn: bandPath(rows, (r) => r.yInTop, (r) => r.yInBot),
-    areaOut: bandPath(rows, (r) => r.yOutTop, (r) => r.yOutBot),
-    areaCc: bandPath(rows, (r) => r.yCcTop, (r) => r.yCcBot),
-    areaCr: bandPath(rows, (r) => r.yCrTop, (r) => r.yCrBot),
-    lineIn: line((r) => r.yInTop),
-    lineOut: line((r) => r.yOutTop),
-    lineCc: line((r) => r.yCcTop),
-    lineCr: line((r) => r.yCrTop),
-    lineCost: line((r) => r.yCost),
+    rows, grid, axisTicks, span,
+    visibleRows: rows.filter((r) => r.x >= padL && r.x <= W.value - padR),
+    lineTokens: smoothLine(rows.map((r) => ({ x: r.x, y: r.yTokens }))),
   }
 })
 
-function ticks(n: number): number[] {
-  if (n <= 1) return [0]
-  const count = Math.min(6, n)
-  const out: number[] = []
-  for (let i = 0; i < count; i++) out.push(Math.round((i * (n - 1)) / (count - 1)))
-  return [...new Set(out)]
-}
-
-function fmtTick(iso: string, span: number): string {
-  return fmtTimeTick(iso, span <= 36 * 3600 * 1000)
-}
-
-const hovered = computed(() => {
-  const v = view.value
-  if (!v || hover.value < 0) return null
-  return v.rows[hover.value] ?? null
+const hovered = computed(() => view.value?.visibleRows.find((r) => r.time === hoverTime.value) ?? null)
+const marker = computed(() => hovered.value ?? (view.value?.rows.length === 1 ? view.value.rows[0] : null))
+const hoverWindow = computed(() => {
+  const full = fullRange.value
+  if (!hovered.value || !props.series || !full) return null
+  // Values always describe their actual bin, not a fraction created by zooming.
+  const win = binWindow(hovered.value.time, props.series.interval_seconds, full.from, full.to)
+  return {
+    label: `${fmtTime(new Date(win.from).toISOString())} – ${fmtTimeTick(new Date(win.to).toISOString(), true)}`,
+  }
 })
 
-function onMove(ev: MouseEvent) {
-  const v = view.value
-  const svg = ev.currentTarget as SVGSVGElement
-  if (!v || !svg) return
-  const rect = svg.getBoundingClientRect()
-  const x = ((ev.clientX - rect.left) / rect.width) * W
-  let best = 0
-  let bestD = Infinity
-  for (let i = 0; i < v.rows.length; i++) {
-    const d = Math.abs(v.rows[i].x - x)
-    if (d < bestD) {
-      bestD = d
-      best = i
+watch([bodyRef, tooltipRef], ([body, tip], _, onCleanup) => {
+  if (!body) return
+  const measure = () => {
+    const { width, height } = body.getBoundingClientRect()
+    if (width !== bodySize.value.width || height !== bodySize.value.height) {
+      bodySize.value = { width, height }
+      stopDrag()
+      clearHover()
+    }
+    if (tip) tooltipSize.value = { width: tip.offsetWidth, height: tip.offsetHeight }
+  }
+  const observer = new ResizeObserver(measure)
+  observer.observe(body)
+  if (tip) observer.observe(tip)
+  measure()
+  onCleanup(() => observer.disconnect())
+}, { flush: 'post' })
+
+const tooltipOffset = computed(() => {
+  const matrix = svgRef.value?.getScreenCTM()
+  const body = bodyRef.value
+  if (!pointer.value || !matrix || !body) return { x: 8, y: 8 }
+  const p = new DOMPoint(pointer.value.x, pointer.value.y).matrixTransform(matrix)
+  const rect = body.getBoundingClientRect()
+  return tooltipPosition({ x: p.x - rect.left, y: p.y - rect.top }, bodySize.value, tooltipSize.value)
+})
+
+function clearHover() {
+  hoverTime.value = null
+  pointer.value = null
+}
+
+function applyWindow(window: TimeWindow) {
+  const full = fullRange.value
+  if (!full) return
+  const next = fitTimeWindow(window, full, minSpan.value)
+  zoomWindow.value = Math.abs(next.from - full.from) < 1 && Math.abs(next.to - full.to) < 1 ? null : next
+  clearHover()
+}
+
+function stopDrag() {
+  const id = drag.value?.pointerId
+  drag.value = null
+  if (id !== undefined && svgRef.value?.hasPointerCapture(id)) svgRef.value.releasePointerCapture(id)
+}
+
+function resetView() {
+  stopDrag()
+  zoomWindow.value = null
+  clearHover()
+}
+
+// A range/filter change resets the view; polling only constrains it to new bounds.
+watch(() => [props.resetKey, props.rangeLabel], resetView)
+watch(() => props.series, () => {
+  clearHover()
+  if (!fullRange.value) resetView()
+  else if (zoomWindow.value) applyWindow(zoomWindow.value)
+})
+
+function plotPoint(ev: MouseEvent): ChartPoint | null {
+  const matrix = svgRef.value?.getScreenCTM()
+  return matrix ? new DOMPoint(ev.clientX, ev.clientY).matrixTransform(matrix.inverse()) : null
+}
+
+function inPlot(p: ChartPoint | null): p is ChartPoint {
+  return !!p && p.x >= padL && p.x <= W.value - padR && p.y >= padT && p.y <= yBase.value
+}
+
+function pickHover(p: ChartPoint | null) {
+  clearHover()
+  if (!inPlot(p) || !view.value) return
+  pointer.value = p
+  let best = Infinity
+  for (const row of view.value.visibleRows) {
+    const distance = Math.abs(row.x - p.x)
+    if (distance < best) {
+      best = distance
+      hoverTime.value = row.time
     }
   }
-  hover.value = best
-  const row = v.rows[best]
-  const localX = (row.x / W) * rect.width
-  tipPos.value = {
-    x: Math.min(rect.width - 220, Math.max(8, localX + 12)),
-    y: 28,
+}
+
+function onMove(ev: PointerEvent) {
+  const p = plotPoint(ev)
+  const full = fullRange.value
+  if (drag.value && p && full && ev.pointerId === drag.value.pointerId) {
+    const { x, window } = drag.value
+    applyWindow(panTimeWindow(window, full, (x - p.x) / innerW.value * (window.to - window.from)))
+  } else if (!drag.value) pickHover(p)
+}
+
+function onWheel(ev: WheelEvent) {
+  const p = plotPoint(ev)
+  const full = fullRange.value
+  const win = viewport.value
+  // Outside the plot, native page scrolling/zooming must continue to work.
+  if (!inPlot(p) || !full || !win || drag.value || ev.ctrlKey || ev.metaKey || !ev.deltaY || !ev.cancelable) return
+  if (full.to - full.from <= minSpan.value) return
+  ev.preventDefault()
+  const height = svgRef.value?.getBoundingClientRect().height ?? H.value
+  applyWindow(zoomTimeWindow(win, full, (p.x - padL) / innerW.value, wheelZoomFactor(ev.deltaY, ev.deltaMode, height), minSpan.value))
+  pickHover(p)
+}
+
+function onDown(ev: PointerEvent) {
+  const p = plotPoint(ev)
+  if (ev.button !== 0 || !ev.isPrimary || !isZoomed.value || !inPlot(p) || !viewport.value) return
+  ev.preventDefault()
+  svgRef.value?.focus({ preventScroll: true })
+  svgRef.value?.setPointerCapture(ev.pointerId)
+  drag.value = { pointerId: ev.pointerId, x: p.x, window: { ...viewport.value } }
+  clearHover()
+}
+
+function onEnd(ev: PointerEvent) {
+  if (drag.value?.pointerId !== ev.pointerId) return
+  stopDrag()
+  if (ev.type === 'pointerup') pickHover(plotPoint(ev))
+}
+
+function onDoubleClick(ev: MouseEvent) {
+  if (inPlot(plotPoint(ev))) resetView()
+}
+
+function onKey(ev: KeyboardEvent) {
+  const full = fullRange.value
+  const win = viewport.value
+  if (!full || !win || ev.ctrlKey || ev.metaKey || ev.altKey) return
+  if (ev.key === '+' || ev.key === '=' || ev.key === '-') {
+    ev.preventDefault()
+    applyWindow(zoomTimeWindow(win, full, 0.5, ev.key === '-' ? 1.25 : 0.8, minSpan.value))
+  } else if (isZoomed.value && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+    ev.preventDefault()
+    applyWindow(panTimeWindow(win, full, (win.to - win.from) * (ev.key === 'ArrowLeft' ? -0.2 : 0.2)))
+  } else if (ev.key === 'Home' || ev.key === 'Escape') {
+    ev.preventDefault()
+    resetView()
   }
 }
 </script>
@@ -182,128 +239,73 @@ function onMove(ev: MouseEvent) {
 <template>
   <div class="card trend-card">
     <div class="trend-head">
-      <h2>每日趋势</h2>
-      <p v-if="rangeLabel" class="range-label">{{ rangeLabel }}</p>
+      <div class="trend-heading">
+        <h2>用量趋势</h2>
+        <div v-if="view" class="trend-legend">
+          <span><i :style="{ borderColor: COL.tokens }" />总 Tokens</span>
+        </div>
+      </div>
+      <div class="trend-actions">
+        <p class="range-label">{{ [rangeLabel, resolution].filter(Boolean).join(' · ') }}</p>
+        <button class="reset-zoom" type="button" :disabled="!isZoomed" @click="resetView">重置</button>
+      </div>
     </div>
-    <div v-if="view" class="trend-body">
+    <div v-if="view" ref="bodyRef" class="trend-body">
       <svg
+        ref="svgRef"
         class="chart"
+        :class="{ zoomed: isZoomed, dragging: drag !== null }"
         :viewBox="`0 0 ${W} ${H}`"
         role="img"
-        aria-label="用量趋势"
-        @mousemove="onMove"
-        @mouseleave="hover = -1"
+        aria-label="用量趋势；滚轮缩放，放大后拖动平移；键盘加减号缩放、左右键平移、Home 重置"
+        tabindex="0"
+        @pointermove="onMove"
+        @pointerleave="!drag && clearHover()"
+        @pointerdown="onDown"
+        @pointerup="onEnd"
+        @pointercancel="onEnd"
+        @lostpointercapture="drag = null"
+        @wheel="onWheel"
+        @dblclick="onDoubleClick"
+        @keydown="onKey"
       >
         <defs>
-          <linearGradient id="trendIn" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stop-color="#3b82f6" stop-opacity="0.45" />
-            <stop offset="95%" stop-color="#3b82f6" stop-opacity="0.12" />
-          </linearGradient>
-          <linearGradient id="trendOut" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stop-color="#22c55e" stop-opacity="0.45" />
-            <stop offset="95%" stop-color="#22c55e" stop-opacity="0.12" />
-          </linearGradient>
-          <linearGradient id="trendCc" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stop-color="#f97316" stop-opacity="0.45" />
-            <stop offset="95%" stop-color="#f97316" stop-opacity="0.12" />
-          </linearGradient>
-          <linearGradient id="trendCr" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stop-color="#a855f7" stop-opacity="0.4" />
-            <stop offset="95%" stop-color="#a855f7" stop-opacity="0.1" />
-          </linearGradient>
+          <clipPath :id="`${chartId}-plot`">
+            <rect :x="padL" :y="padT" :width="innerW" :height="innerH" />
+          </clipPath>
         </defs>
-        <line
-          v-for="(g, i) in view.grid"
-          :key="'g' + i"
-          :x1="padL"
-          :x2="W - padR"
-          :y1="g.y"
-          :y2="g.y"
-          class="grid-line"
-        />
-        <text
-          v-for="(g, i) in view.grid"
-          :key="'yt' + i"
-          class="axis"
-          :x="padL - 8"
-          :y="g.y + 4"
-          text-anchor="end"
-        >
+        <line v-for="(g, i) in view.grid" :key="'g' + i" :x1="padL" :x2="W - padR" :y1="g.y" :y2="g.y" class="grid-line" />
+        <text v-for="(g, i) in view.grid" :key="'yt' + i" class="axis" :x="padL - 8" :y="g.y + 4" text-anchor="end">
           {{ fmtAxisTokens(g.tok) }}
         </text>
-        <text
-          v-for="(g, i) in view.grid"
-          :key="'yc' + i"
-          class="axis"
-          :x="W - padR + 8"
-          :y="g.y + 4"
-          text-anchor="start"
-        >
-          {{ fmtUsd(g.cost) }}
-        </text>
-        <path :d="view.areaIn" :fill="SERIES[0].fill" />
-        <path :d="view.areaOut" :fill="SERIES[1].fill" />
-        <path :d="view.areaCc" :fill="SERIES[2].fill" />
-        <path :d="view.areaCr" :fill="SERIES[3].fill" />
-        <path :d="view.lineIn" fill="none" :stroke="COL.input" stroke-width="2" />
-        <path :d="view.lineOut" fill="none" :stroke="COL.output" stroke-width="2" />
-        <path :d="view.lineCc" fill="none" :stroke="COL.cacheCreation" stroke-width="2" />
-        <path :d="view.lineCr" fill="none" :stroke="COL.cacheRead" stroke-width="2" />
-        <path
-          :d="view.lineCost"
-          fill="none"
-          :stroke="COL.cost"
-          stroke-width="2"
-          stroke-dasharray="4 4"
-        />
-        <line
-          v-if="hovered"
-          :x1="hovered.x"
-          :x2="hovered.x"
-          :y1="padT"
-          :y2="view.yBase"
-          class="hover-line"
-        />
-        <circle v-if="hovered" :cx="hovered.x" :cy="hovered.yInTop" r="3.2" :fill="COL.input" />
-        <circle v-if="hovered" :cx="hovered.x" :cy="hovered.yOutTop" r="3.2" :fill="COL.output" />
-        <circle v-if="hovered" :cx="hovered.x" :cy="hovered.yCcTop" r="3.2" :fill="COL.cacheCreation" />
-        <circle v-if="hovered" :cx="hovered.x" :cy="hovered.yCrTop" r="3.2" :fill="COL.cacheRead" />
-        <circle v-if="hovered" :cx="hovered.x" :cy="hovered.yCost" r="3.2" :fill="COL.cost" />
-        <text
-          v-for="i in view.tickIdx"
-          :key="'t' + i"
-          class="axis"
-          :x="view.rows[i].x"
-          :y="H - 10"
-          text-anchor="middle"
-        >
-          {{ fmtTick(view.rows[i].t, view.span) }}
+        <g :clip-path="`url(#${chartId}-plot)`">
+          <path :d="view.lineTokens" fill="none" :stroke="COL.tokens" stroke-width="2" />
+          <line v-if="hovered" :x1="hovered.x" :x2="hovered.x" :y1="padT" :y2="yBase" class="hover-line" />
+          <g v-if="marker">
+            <circle :cx="marker.x" :cy="marker.yTokens" r="3.2" :fill="COL.tokens" />
+          </g>
+        </g>
+        <text v-for="(tick, i) in view.axisTicks" :key="'t' + i" class="axis time-tick" :x="tick.x" :y="H - 10" :text-anchor="i === view.axisTicks.length - 1 ? 'end' : 'middle'">
+          {{ fmtTimeTick(tick.t, view.span <= 36 * 3600 * 1000) }}
         </text>
       </svg>
-      <div v-if="hovered" class="tip" :style="{ left: tipPos.x + 'px', top: tipPos.y + 'px' }">
-        <p class="tip-h">{{ fmtTime(hovered.t) }}</p>
-        <div class="tip-row" :style="{ color: COL.input }">
-          <i :style="{ background: COL.input }" />输入 Tokens: {{ fmtInt(hovered.input) }}
+      <div
+        v-if="hovered"
+        ref="tooltipRef"
+        class="trend-tooltip"
+        role="tooltip"
+        :style="{ left: tooltipOffset.x + 'px', top: tooltipOffset.y + 'px' }"
+      >
+        <p class="tooltip-time"><time :datetime="hovered.t">{{ hoverWindow?.label }}</time></p>
+        <div class="tooltip-row" :style="{ color: COL.tokens }">
+          <span>Tokens</span><strong>{{ fmtInt(hovered.tokens) }}</strong>
         </div>
-        <div class="tip-row" :style="{ color: COL.output }">
-          <i :style="{ background: COL.output }" />输出 Tokens: {{ fmtInt(hovered.output) }}
-        </div>
-        <div class="tip-row" :style="{ color: COL.cacheCreation }">
-          <i :style="{ background: COL.cacheCreation }" />缓存创建: {{ fmtInt(hovered.cacheCreation) }}
-        </div>
-        <div class="tip-row" :style="{ color: COL.cacheRead }">
-          <i :style="{ background: COL.cacheRead }" />缓存命中: {{ fmtInt(hovered.cacheRead) }}
-        </div>
-        <div class="tip-row" :style="{ color: COL.cost }">
-          <i :style="{ background: COL.cost }" />成本: {{ fmtUsd(hovered.cost) }}
+        <div class="tooltip-row" :style="{ color: COL.cost }">
+          <span>成本</span><strong>{{ fmtUsd(hovered.cost) }}</strong>
         </div>
       </div>
     </div>
     <div v-else class="empty trend-empty">窗口内没有趋势数据</div>
-    <div v-if="view" class="legend-row">
-      <span v-for="s in SERIES" :key="s.key"><i :style="{ background: s.color }" />{{ s.name }}</span>
-      <span><i class="dash" :style="{ background: COL.cost }" />成本</span>
-    </div>
   </div>
 </template>
 
@@ -311,12 +313,16 @@ function onMove(ev: MouseEvent) {
 .trend-card {
   padding: 14px 16px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .trend-head {
   display: flex;
-  align-items: baseline;
+  flex-shrink: 0;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   margin-bottom: 10px;
 }
 .trend-head h2 {
@@ -327,19 +333,58 @@ function onMove(ev: MouseEvent) {
   text-transform: none;
   font-weight: 600;
 }
+.trend-heading,
+.trend-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.trend-legend {
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.trend-legend i {
+  width: 12px;
+  border-top: 2px solid;
+}
+.trend-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
 .range-label {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
 }
-.trend-body {
-  position: relative;
+.reset-zoom {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  padding: 3px 7px;
+  font-size: 11px;
 }
+.reset-zoom:disabled { opacity: 0.4; }
+.reset-zoom:hover:not(:disabled) { border-color: var(--mint); }
 .chart {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: 200px;
+  height: 100%;
   display: block;
+  touch-action: pan-y pinch-zoom;
+  user-select: none;
 }
+.chart.zoomed { cursor: grab; }
+.chart.dragging { cursor: grabbing; }
+.chart:focus-visible { outline: 1px solid var(--mint); border-radius: 6px; }
 .axis {
   fill: var(--muted);
   font-size: 11px;
@@ -355,62 +400,44 @@ function onMove(ev: MouseEvent) {
   stroke-width: 1;
   opacity: 0.25;
 }
-.legend-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 10px;
+.trend-body {
+  position: relative;
+  flex: 1;
+  min-height: 220px;
+}
+.trend-tooltip {
+  position: absolute;
+  z-index: 2;
+  width: 248px;
+  max-width: calc(100% - 16px);
+  padding: 9px 11px;
+  border: 1px solid rgba(139, 151, 168, 0.3);
+  border-radius: 8px;
+  background: rgba(11, 14, 18, 0.62);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
   font-size: 12px;
-  color: var(--muted);
 }
-.legend-row i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 99px;
-  margin-right: 6px;
+.tooltip-time {
+  margin: 0 0 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.legend-row i.dash {
-  border-radius: 1px;
-  height: 3px;
-  width: 12px;
-  vertical-align: middle;
+.tooltip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
+.tooltip-row strong { font-weight: 600; }
 .trend-empty {
   min-height: 160px;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.tip {
-  position: absolute;
-  z-index: 2;
-  min-width: 188px;
-  pointer-events: none;
-  background: rgba(11, 14, 18, 0.94);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(8px);
-  font-size: 12px;
-}
-.tip-h {
-  margin: 0 0 8px;
-  font-weight: 600;
-  color: var(--text);
-}
-.tip-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 3px;
-  font-variant-numeric: tabular-nums;
-}
-.tip-row i {
-  width: 8px;
-  height: 8px;
-  border-radius: 99px;
-  flex: 0 0 8px;
 }
 </style>
